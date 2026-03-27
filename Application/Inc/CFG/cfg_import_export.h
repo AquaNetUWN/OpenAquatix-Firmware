@@ -70,6 +70,23 @@ bool ImportExport_ExportConfiguration(FunctionContext_t* context);
  */
 bool ImportExport_ImportConfiguration(FunctionContext_t* context);
 
+/**
+ * @brief Imports configuration values from a single text buffer
+ *
+ * Parses the same START...END export blob accepted by the interactive import
+ * menu entry and applies the contained parameter values immediately.
+ *
+ * @param input Serialized configuration text
+ * @param input_len Length of the serialized text
+ * @param output_buffer Scratch buffer used for emitted status or error text
+ * @param interface Target interface for emitted status or error text
+ *
+ * @return true if import completed successfully, false otherwise
+ */
+bool ImportExport_ImportConfigurationText(const char* input, uint16_t input_len,
+                                          uint8_t* output_buffer,
+                                          CommInterface_t interface);
+
 /* Private defines -----------------------------------------------------------*/
 
 #ifdef __cplusplus

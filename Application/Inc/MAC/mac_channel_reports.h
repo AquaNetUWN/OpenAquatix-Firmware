@@ -16,7 +16,7 @@ extern "C" {
 #endif
 
 /* Includes ------------------------------------------------------------------*/
-
+#include <stdint.h>
 
 
 /* Private includes ----------------------------------------------------------*/
@@ -26,6 +26,8 @@ extern "C" {
 /* Exported types ------------------------------------------------------------*/
 
 typedef struct {
+  uint64_t timestamp_ms;
+  uint32_t cyccnt;
   float psd;
 } ChannelReport_t;
 

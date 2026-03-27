@@ -18,6 +18,8 @@ extern "C" {
 /* Includes ------------------------------------------------------------------*/
 
 #include "stm32h7xx_hal.h"
+#include "mac_channel_reports.h"
+#include "mess_main.h"
 #include <stdbool.h>
 
 /* Private includes ----------------------------------------------------------*/
@@ -26,7 +28,7 @@ extern "C" {
 /* Exported types ------------------------------------------------------------*/
 
 #define MAX_COMM_IN_BUFFER_SIZE   512
-#define MAX_COMM_OUT_BUFFER_SIZE  512
+#define MAX_COMM_OUT_BUFFER_SIZE  1024
 
 #define CALC_LEN                  0 // A length of 0 makes the function call strlen
 
@@ -100,6 +102,158 @@ void COMM_StartTask(void *argument);
  * @param interface Target communication interface (COMM_USB, COMM_UART, or COMM_BOTH)
  */
 void COMM_TransmitData(const void *data, uint32_t data_len, CommInterface_t interface);
+
+/**
+ * @brief Returns whether the session-scoped tagged HMI mode is enabled
+ *
+ * @return true when tagged output is enabled, false otherwise
+ */
+bool COMM_IsTagModeEnabled(void);
+
+/**
+ * @brief Enables or disables the session-scoped tagged HMI mode
+ *
+ * @param enabled true to enable tagged mode, false to disable it
+ */
+void COMM_SetTagMode(bool enabled);
+
+/**
+ * @brief Returns whether HMI prompts are enabled for the current session
+ *
+ * @return true when prompts are enabled, false otherwise
+ */
+bool COMM_IsPromptEnabled(void);
+
+/**
+ * @brief Enables or disables HMI prompts for the current session
+ *
+ * @param enabled true to enable prompts, false to disable them
+ */
+void COMM_SetPromptEnabled(bool enabled);
+
+/**
+ * @brief Transmits a logical HMI line using the current session formatting mode
+ *
+ * When tagged mode is enabled, the line is prefixed with the provided HMI tag.
+ * Otherwise the text is transmitted as a plain line ending in CRLF.
+ *
+ * @param tag HMI tag to use when tagged mode is enabled
+ * @param text Logical line contents without trailing CRLF
+ * @param interface Target communication interface
+ */
+void COMM_TransmitHmiLine(HmiTag_t tag, const char* text, CommInterface_t interface);
+
+/**
+ * @brief printf-style variant of COMM_TransmitHmiLine()
+ *
+ * @param tag HMI tag to use when tagged mode is enabled
+ * @param interface Target communication interface
+ * @param format printf-style format string
+ */
+void COMM_TransmitHmiLinef(HmiTag_t tag, CommInterface_t interface, const char* format, ...);
+
+/**
+ * @brief Transmits a tagged machine-response line regardless of session mode
+ *
+ * @param tag HMI tag to use
+ * @param text Logical line contents without trailing CRLF
+ * @param interface Target communication interface
+ */
+void COMM_TransmitHmiMachineLine(HmiTag_t tag, const char* text, CommInterface_t interface);
+
+/**
+ * @brief printf-style variant of COMM_TransmitHmiMachineLine()
+ *
+ * @param tag HMI tag to use
+ * @param interface Target communication interface
+ * @param format printf-style format string
+ */
+void COMM_TransmitHmiMachineLinef(HmiTag_t tag, CommInterface_t interface, const char* format, ...);
+
+/**
+ * @brief Transmits raw COMM-owned text in raw mode or tagged logical lines in tag mode
+ *
+ * This is intended for existing COMM text paths that still build CRLF-delimited
+ * strings. In tagged mode, each non-empty line is emitted with the provided
+ * tag. In raw mode, the text is transmitted unchanged.
+ *
+ * @param tag HMI tag to use when tagged mode is enabled
+ * @param text Text buffer that may contain CR/LF-delimited lines
+ * @param interface Target communication interface
+ */
+void COMM_TransmitTaggedText(HmiTag_t tag, const char* text, CommInterface_t interface);
+
+/**
+ * @brief printf-style variant of COMM_TransmitTaggedText()
+ *
+ * @param tag HMI tag to use when tagged mode is enabled
+ * @param interface Target communication interface
+ * @param format printf-style format string
+ */
+void COMM_TransmitTaggedTextf(HmiTag_t tag, CommInterface_t interface, const char* format, ...);
+
+/**
+ * @brief Transmits a logical HMI prompt
+ *
+ * In tagged mode, prompts are emitted as a single line ending in the exact
+ * suffix " > ". In raw mode, the text is emitted as-is followed by CRLF.
+ *
+ * @param text Prompt text without trailing CRLF
+ * @param interface Target communication interface
+ */
+void COMM_TransmitHmiPrompt(const char* text, CommInterface_t interface);
+
+/**
+ * @brief printf-style variant of COMM_TransmitHmiPrompt()
+ *
+ * @param interface Target communication interface
+ * @param format printf-style format string
+ */
+void COMM_TransmitHmiPromptf(CommInterface_t interface, const char* format, ...);
+
+/**
+ * @brief Enables or disables machine-readable RX event streaming
+ *
+ * @param enabled true to enable the stream, false to disable it
+ * @param interface Target interface for streamed events when enabling
+ */
+void COMM_SetHostRxSubscription(bool enabled, CommInterface_t interface);
+
+/**
+ * @brief Enables or disables machine-readable channel sensing event streaming
+ *
+ * @param enabled true to enable the stream, false to disable it
+ * @param interface Target interface for streamed events when enabling
+ */
+void COMM_SetHostSenseSubscription(bool enabled, CommInterface_t interface);
+
+/**
+ * @brief Returns whether machine-readable RX event streaming is enabled
+ *
+ * @return true if RX streaming is enabled
+ */
+bool COMM_IsHostRxSubscriptionEnabled(void);
+
+/**
+ * @brief Returns whether machine-readable sensing event streaming is enabled
+ *
+ * @return true if sensing streaming is enabled
+ */
+bool COMM_IsHostSenseSubscriptionEnabled(void);
+
+/**
+ * @brief Emits a machine-readable RX event if the host RX stream is enabled
+ *
+ * @param msg Received message metadata and payload
+ */
+void COMM_ReportHostRxEvent(const Message_t* msg);
+
+/**
+ * @brief Emits a machine-readable sensing event if the sensing stream is enabled
+ *
+ * @param report Completed channel report metadata
+ */
+void COMM_ReportHostSenseEvent(const ChannelReport_t* report);
 
 /* Private defines -----------------------------------------------------------*/
 

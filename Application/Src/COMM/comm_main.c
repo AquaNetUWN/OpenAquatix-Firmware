@@ -18,18 +18,24 @@
 #include "dau_card-driver.h"
 #include "error_manager.h"
 
+#include "comm_commands.h"
 #include "comm_menu_registration.h"
 #include "comm_main.h"
 #include "comm_menu_system.h"
 #include "comm_print.h"
 
 #include "mess_main.h"
+#include "base64.h"
 
 #include "cfg_main.h"
 #include "cfg_parameters.h"
 #include "cfg_defaults.h"
 
 #include <ctype.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 /* Private typedef -----------------------------------------------------------*/
 
@@ -40,8 +46,15 @@ typedef struct {
 
 typedef struct {
   bool tag_mode;
+  bool prompt_enabled;
   HmiInputContext_t input_context;
+  bool prompt_active;
 } HmiSession_t;
+
+typedef struct {
+  bool enabled;
+  CommInterface_t interface;
+} HostStreamSubscription_t;
 
 /* Private define ------------------------------------------------------------*/
 
@@ -59,6 +72,12 @@ typedef struct {
 /* Private variables ---------------------------------------------------------*/
 
 static MenuContext_t menu_context;
+static HmiSession_t hmi_session = {
+  .tag_mode = false,
+  .prompt_enabled = false,
+  .input_context = HMI_INPUT_CONTEXT_MENU,
+  .prompt_active = false
+};
 static uint8_t out_buffer[MAX_COMM_OUT_BUFFER_SIZE];
 
 static uint8_t msg_buffer[MAX_COMM_IN_BUFFER_SIZE];
@@ -66,6 +85,14 @@ static uint16_t msg_buf_len = 0;
 static uint8_t test_msg[] = "Welcome to the UAM HMI!\r\n";
 
 static uint16_t last_echo_len = 0;
+static HostStreamSubscription_t host_rx_subscription = {
+  .enabled = false,
+  .interface = COMM_USB
+};
+static HostStreamSubscription_t host_sense_subscription = {
+  .enabled = false,
+  .interface = COMM_USB
+};
 
 /* Private function prototypes -----------------------------------------------*/
 
@@ -75,6 +102,7 @@ static RxState_t getHmiInput(CommInterface_t* interface);
 static void handleHmiWithdraw(void);
 static void handleHmiNavigation(void);
 static void handleHmiFunction(void);
+static void invokeCurrentLeafHandler(bool consume_input);
 
 static void echoInput(void);
 
@@ -83,6 +111,21 @@ static bool isNumber(uint8_t* buf, uint16_t len);
 static bool checkMenuNumberInput(uint8_t* buf, uint16_t len, uint16_t* number);
 static void updateInputEcho(uint8_t* msg_buffer, uint16_t len);
 static void resetInputEcho(void);
+static const char* getHmiTagString(HmiTag_t tag);
+static void transmitHmiLineInternal(HmiTag_t tag, const char* text,
+                                    CommInterface_t interface, bool force_tag);
+static void transmitHmiPromptInternal(const char* text, CommInterface_t interface);
+static void transmitFormattedHmiLine(HmiTag_t tag, CommInterface_t interface,
+                                     bool force_tag, const char* format, va_list args);
+static void finalizePromptLineIfNeeded(CommInterface_t interface);
+static size_t appendMachineToken(char* buffer, size_t buffer_size, size_t offset,
+                                 const char* format, ...);
+static const char* messageRouteString(MessageType_t type);
+static const char* protocolString(MessagingProtocol_t protocol);
+static const char* customTypeString(CustomMessageData_t data_type);
+static const char* janusTypeString(JanusMessageData_t data_type);
+static void appendPreambleFieldToken(char* buffer, size_t buffer_size, size_t* offset,
+                                     const char* key, PreambleValue_t value);
 
 static void printNotifications(void);
 
@@ -115,6 +158,7 @@ void COMM_StartTask(void *argument)
   for(;;) {
     Message_t rx_msg;
     if (MESS_GetMessageFromRxQ(&rx_msg) == true) {
+      COMM_ReportHostRxEvent(&rx_msg);
       Print_DisplayReceivedMessage(&rx_msg, out_buffer, menu_context.interface);
     }
 
@@ -125,11 +169,13 @@ void COMM_StartTask(void *argument)
     switch (state) {
       case DATA_READY:
         if (msg_buffer[0] == WITHDRAW_CHAR && msg_buf_len > 0) {
+          resetInputEcho();
           handleHmiWithdraw();
           break;
         }
 
         if (menu_context.current_menu->num_children != 0) {
+          resetInputEcho();
           hmi_session.input_context = HMI_INPUT_CONTEXT_MENU;
           CommandContext_t command_context = {
             .interface = menu_context.interface,
@@ -190,6 +236,226 @@ void COMM_TransmitData(const void *data, uint32_t data_len, CommInterface_t inte
   }
 }
 
+bool COMM_IsTagModeEnabled(void)
+{
+  return hmi_session.tag_mode;
+}
+
+void COMM_SetTagMode(bool enabled)
+{
+  hmi_session.tag_mode = enabled;
+  if (enabled == false) {
+    hmi_session.prompt_active = false;
+  }
+}
+
+bool COMM_IsPromptEnabled(void)
+{
+  return hmi_session.prompt_enabled;
+}
+
+void COMM_SetPromptEnabled(bool enabled)
+{
+  hmi_session.prompt_enabled = enabled;
+  if (enabled == false) {
+    hmi_session.prompt_active = false;
+  }
+}
+
+void COMM_TransmitHmiLine(HmiTag_t tag, const char* text, CommInterface_t interface)
+{
+  transmitHmiLineInternal(tag, text, interface, false);
+}
+
+void COMM_TransmitHmiLinef(HmiTag_t tag, CommInterface_t interface, const char* format, ...)
+{
+  va_list args;
+  va_start(args, format);
+  transmitFormattedHmiLine(tag, interface, false, format, args);
+  va_end(args);
+}
+
+void COMM_TransmitHmiMachineLine(HmiTag_t tag, const char* text, CommInterface_t interface)
+{
+  transmitHmiLineInternal(tag, text, interface, true);
+}
+
+void COMM_TransmitHmiMachineLinef(HmiTag_t tag, CommInterface_t interface, const char* format, ...)
+{
+  va_list args;
+  va_start(args, format);
+  transmitFormattedHmiLine(tag, interface, true, format, args);
+  va_end(args);
+}
+
+void COMM_TransmitTaggedText(HmiTag_t tag, const char* text, CommInterface_t interface)
+{
+  char line_buffer[MAX_COMM_OUT_BUFFER_SIZE];
+  const char* cursor = (text != NULL) ? text : "";
+
+  if (COMM_IsTagModeEnabled() == false) {
+    COMM_TransmitData(cursor, CALC_LEN, interface);
+    return;
+  }
+
+  while (*cursor != '\0') {
+    while (*cursor == '\r' || *cursor == '\n') {
+      cursor++;
+    }
+
+    if (*cursor == '\0') {
+      break;
+    }
+
+    size_t line_length = 0;
+    while (cursor[line_length] != '\0' &&
+           cursor[line_length] != '\r' &&
+           cursor[line_length] != '\n') {
+      line_length++;
+    }
+
+    size_t copy_length = MIN(line_length, sizeof(line_buffer) - 1);
+    memcpy(line_buffer, cursor, copy_length);
+    line_buffer[copy_length] = '\0';
+    COMM_TransmitHmiLine(tag, line_buffer, interface);
+
+    cursor += line_length;
+  }
+}
+
+void COMM_TransmitTaggedTextf(HmiTag_t tag, CommInterface_t interface, const char* format, ...)
+{
+  char buffer[MAX_COMM_OUT_BUFFER_SIZE];
+  va_list args;
+
+  va_start(args, format);
+  vsnprintf(buffer, sizeof(buffer), format, args);
+  va_end(args);
+
+  COMM_TransmitTaggedText(tag, buffer, interface);
+}
+
+void COMM_TransmitHmiPrompt(const char* text, CommInterface_t interface)
+{
+  transmitHmiPromptInternal(text, interface);
+}
+
+void COMM_TransmitHmiPromptf(CommInterface_t interface, const char* format, ...)
+{
+  char buffer[MAX_COMM_OUT_BUFFER_SIZE];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(buffer, sizeof(buffer), format, args);
+  va_end(args);
+  transmitHmiPromptInternal(buffer, interface);
+}
+
+void COMM_SetHostRxSubscription(bool enabled, CommInterface_t interface)
+{
+  host_rx_subscription.enabled = enabled;
+  if (enabled == true) {
+    host_rx_subscription.interface = interface;
+  }
+}
+
+void COMM_SetHostSenseSubscription(bool enabled, CommInterface_t interface)
+{
+  host_sense_subscription.enabled = enabled;
+  if (enabled == true) {
+    host_sense_subscription.interface = interface;
+  }
+}
+
+bool COMM_IsHostRxSubscriptionEnabled(void)
+{
+  return host_rx_subscription.enabled;
+}
+
+bool COMM_IsHostSenseSubscriptionEnabled(void)
+{
+  return host_sense_subscription.enabled;
+}
+
+void COMM_ReportHostRxEvent(const Message_t* msg)
+{
+  if (msg == NULL || host_rx_subscription.enabled == false) {
+    return;
+  }
+
+  char event_buffer[MAX_COMM_OUT_BUFFER_SIZE];
+  size_t offset = 0;
+
+  offset = appendMachineToken(event_buffer, sizeof(event_buffer), offset,
+      "EVENT protocol=%s route=%s timestamp_ms=%lu rx_cyccnt=%lu length_bits=%u error=%u",
+      protocolString(msg->protocol), messageRouteString(msg->type),
+      (unsigned long) msg->timestamp, (unsigned long) msg->rx_cyccnt,
+      msg->length_bits, msg->error_detected ? 1U : 0U);
+  offset = appendMachineToken(event_buffer, sizeof(event_buffer), offset,
+      " snr=%.3f doppler_mps=%.3f", (double) msg->snr, (double) msg->doppler_mps);
+
+  if (msg->protocol == PROTOCOL_CUSTOM) {
+    offset = appendMachineToken(event_buffer, sizeof(event_buffer), offset,
+        " data_type=%s", customTypeString(msg->data_type));
+  }
+  else if (msg->protocol == PROTOCOL_JANUS) {
+    offset = appendMachineToken(event_buffer, sizeof(event_buffer), offset,
+        " janus_type=%s", janusTypeString(msg->janus_data_type));
+  }
+
+  appendPreambleFieldToken(event_buffer, sizeof(event_buffer), &offset, "modem_id",
+                           msg->preamble.modem_id);
+  appendPreambleFieldToken(event_buffer, sizeof(event_buffer), &offset, "is_mobile",
+                           msg->preamble.is_mobile);
+  appendPreambleFieldToken(event_buffer, sizeof(event_buffer), &offset, "reservation_time_10ms",
+                           msg->preamble.reservation_time_10ms);
+  appendPreambleFieldToken(event_buffer, sizeof(event_buffer), &offset, "schedule_flag",
+                           msg->preamble.schedule_flag);
+  appendPreambleFieldToken(event_buffer, sizeof(event_buffer), &offset, "destination_id",
+                           msg->preamble.destination_id);
+  appendPreambleFieldToken(event_buffer, sizeof(event_buffer), &offset, "tx_rx_capable",
+                           msg->preamble.tx_rx_capable);
+  appendPreambleFieldToken(event_buffer, sizeof(event_buffer), &offset, "can_forward",
+                           msg->preamble.can_forward);
+  appendPreambleFieldToken(event_buffer, sizeof(event_buffer), &offset, "coding",
+                           msg->preamble.coding);
+  appendPreambleFieldToken(event_buffer, sizeof(event_buffer), &offset, "encryption",
+                           msg->preamble.encryption);
+
+  if (msg->data_type == RANGING_RESPONSE) {
+    offset = appendMachineToken(event_buffer, sizeof(event_buffer), offset,
+        " range_m=%.3f", (double) msg->range_m);
+  }
+
+  uint16_t payload_len_bytes = (msg->length_bits + 7U) / 8U;
+  if (payload_len_bytes > PACKET_DATA_MAX_LENGTH_BYTES) {
+    payload_len_bytes = PACKET_DATA_MAX_LENGTH_BYTES;
+  }
+
+  if (payload_len_bytes > 0) {
+    size_t encoded_length = 0;
+    unsigned char* encoded_payload = base64_encode(msg->data, payload_len_bytes, &encoded_length);
+    if (encoded_payload != NULL) {
+      offset = appendMachineToken(event_buffer, sizeof(event_buffer), offset,
+          " payload_b64=%s", (char*) encoded_payload);
+      free(encoded_payload);
+    }
+  }
+
+  COMM_TransmitHmiMachineLine(HMI_TAG_MSG_RX, event_buffer, host_rx_subscription.interface);
+}
+
+void COMM_ReportHostSenseEvent(const ChannelReport_t* report)
+{
+  if (report == NULL || host_sense_subscription.enabled == false) {
+    return;
+  }
+
+  COMM_TransmitHmiMachineLinef(HMI_TAG_NOTIFY, host_sense_subscription.interface,
+      "EVENT sense timestamp_ms=%llu cyccnt=%lu psd=%.6f",
+      (unsigned long long) report->timestamp_ms, (unsigned long) report->cyccnt,
+      (double) report->psd);
+}
+
 /* Private function definitions ----------------------------------------------*/
 
 void registerMenus(void)
@@ -223,7 +489,9 @@ RxState_t getHmiInput(CommInterface_t* interface)
 
 void handleHmiWithdraw(void)
 {
-  menu_context.current_menu->parameters->state = PARAM_STATE_0;
+  if (menu_context.current_menu->parameters != NULL) {
+    menu_context.current_menu->parameters->state = PARAM_STATE_0;
+  }
   menu_context.current_menu = MenuSystem_GetMenu(menu_context.current_menu->parent_id);
   displaySubMenus();
 }
@@ -237,10 +505,29 @@ void handleHmiNavigation(void)
   if (checkMenuNumberInput(msg_buffer, msg_buf_len, &menu_number) == true) {
     // Valid menu option
     menu_context.current_menu = MenuSystem_GetMenu(menu_context.current_menu->children_ids[menu_number - 1]);
-    menu_context.current_menu->parameters->state = PARAM_STATE_0;
+    if (menu_context.current_menu->parameters != NULL) {
+      menu_context.current_menu->parameters->state = PARAM_STATE_0;
+    }
+
+    if (menu_context.current_menu->num_children == 0) {
+      hmi_session.input_context = HMI_INPUT_CONTEXT_FUNCTION;
+      invokeCurrentLeafHandler(false);
+
+      if (menu_context.current_menu->parameters->state == PARAM_STATE_COMPLETE) {
+        menu_context.current_menu->parameters->state = PARAM_STATE_0;
+        menu_context.current_menu = MenuSystem_GetMenu(menu_context.current_menu->parent_id);
+        displaySubMenus();
+      }
+      return;
+    }
   }
   else {
-    COMM_TransmitData("\r\nInvalid option!\r\n", CALC_LEN, menu_context.interface);
+    if (COMM_IsTagModeEnabled() == true) {
+      COMM_TransmitHmiLine(HMI_TAG_ERROR, "Invalid option!", menu_context.interface);
+    }
+    else {
+      COMM_TransmitData("\r\nInvalid option!\r\n", CALC_LEN, menu_context.interface);
+    }
   }
   displaySubMenus();
 }
@@ -249,27 +536,42 @@ void handleHmiFunction(void)
 {
   if (menu_context.current_menu->num_children != 0) return;
 
-  // no children so handle function
-  // Prepare function argument
-  updateInputEcho(msg_buffer, msg_buf_len);
-  osDelay(1);
-  resetInputEcho();
-  FunctionContext_t context = {
-      .state = menu_context.current_menu->parameters,
-      .input_len = msg_buf_len,
-      .output_buffer = msg_buffer,
-      .comm_interface = menu_context.interface
-  };
-  strncpy(context.input, (char*) msg_buffer, MAX_COMM_IN_BUFFER_SIZE);
-
-  (*menu_context.current_menu->handler)(&context);
-  resetInputEcho();
+  invokeCurrentLeafHandler(true);
 
   if (menu_context.current_menu->parameters->state == PARAM_STATE_COMPLETE) {
     menu_context.current_menu->parameters->state = PARAM_STATE_0;
     menu_context.current_menu = MenuSystem_GetMenu(menu_context.current_menu->parent_id);
     displaySubMenus();
   }
+}
+
+static void invokeCurrentLeafHandler(bool consume_input)
+{
+  if (menu_context.current_menu->num_children != 0) return;
+
+  // no children so handle function
+  // Prepare function argument
+  if (consume_input == true) {
+    updateInputEcho(msg_buffer, msg_buf_len);
+    osDelay(1);
+    resetInputEcho();
+  }
+
+  FunctionContext_t context = {
+      .state = menu_context.current_menu->parameters,
+      .input_len = consume_input ? msg_buf_len : 0,
+      .output_buffer = msg_buffer,
+      .comm_interface = menu_context.interface
+  };
+  if (consume_input == true) {
+    strncpy(context.input, (char*) msg_buffer, MAX_COMM_IN_BUFFER_SIZE);
+  }
+  else {
+    context.input[0] = '\0';
+  }
+
+  (*menu_context.current_menu->handler)(&context);
+  resetInputEcho();
 }
 
 void echoInput(void)
@@ -288,7 +590,28 @@ void echoInput(void)
 
 void displaySubMenus(void)
 {
-  if (menu_context.current_menu->num_children == 0) return;
+  if (menu_context.current_menu->num_children == 0) {
+    hmi_session.input_context = HMI_INPUT_CONTEXT_FUNCTION;
+    return;
+  }
+
+  hmi_session.input_context = HMI_INPUT_CONTEXT_MENU;
+  if (COMM_IsTagModeEnabled() == true) {
+    COMM_TransmitHmiLine(HMI_TAG_MENU, menu_context.current_menu->description,
+                         menu_context.interface);
+    for (int i = 0; i < menu_context.current_menu->num_children; i++) {
+      uint16_t child_id = menu_context.current_menu->children_ids[i];
+      MenuNode_t* child_menu = MenuSystem_GetMenu(child_id);
+      snprintf((char*) out_buffer, sizeof(out_buffer), "%d: %s", i + 1,
+               child_menu->description);
+      COMM_TransmitHmiLine(HMI_TAG_MENU, (char*) out_buffer, menu_context.interface);
+    }
+    if (COMM_IsPromptEnabled() == true) {
+      COMM_TransmitHmiPrompt("Select option", menu_context.interface);
+    }
+    return;
+  }
+
   COMM_TransmitData("\r\n", 2, menu_context.interface);
   COMM_TransmitData(menu_context.current_menu->description, CALC_LEN, menu_context.interface);
   COMM_TransmitData("\r\n", 2, menu_context.interface);
@@ -367,35 +690,60 @@ void printNotifications(void)
 
   uint32_t flags = osEventFlagsGet(print_event_handle);
   if (flags & MESS_DROPPED_PACKET_PREAMBLE) {
-    COMM_TransmitData("Dropped a packet with an invalid preamble\r\n", CALC_LEN, menu_context.interface);
+    if (COMM_IsTagModeEnabled() == true) {
+      COMM_TransmitHmiLine(HMI_TAG_NOTIFY,
+          "Dropped a packet with an invalid preamble", menu_context.interface);
+    }
+    else {
+      COMM_TransmitData("Dropped a packet with an invalid preamble\r\n", CALC_LEN,
+                        menu_context.interface);
+    }
     osEventFlagsClear(print_event_handle, MESS_DROPPED_PACKET_PREAMBLE);
   }
   if (flags & MESS_DROPPED_PACKET_CARGO) {
-    COMM_TransmitData("Dropped a packet with an invalid cargo\r\n", CALC_LEN, menu_context.interface);
+    if (COMM_IsTagModeEnabled() == true) {
+      COMM_TransmitHmiLine(HMI_TAG_NOTIFY,
+          "Dropped a packet with an invalid cargo", menu_context.interface);
+    }
+    else {
+      COMM_TransmitData("Dropped a packet with an invalid cargo\r\n", CALC_LEN,
+                        menu_context.interface);
+    }
     osEventFlagsClear(print_event_handle, MESS_DROPPED_PACKET_CARGO);
   }
   if (flags & MESS_MAC_LOST_MESSAGE) {
-    COMM_TransmitData("TX REQUEST FAILED: Lost message in MAC; message not sent\r\n", CALC_LEN, menu_context.interface);
+    COMM_TransmitTaggedText(HMI_TAG_NOTIFY,
+        "TX REQUEST FAILED: Lost message in MAC; message not sent\r\n",
+        menu_context.interface);
     osEventFlagsClear(print_event_handle, MESS_MAC_LOST_MESSAGE);
   }
   if (flags & MESS_MAC_TX_SPACE) {
-    COMM_TransmitData("TX REQUEST FAILED: No space in TX queue for message\r\n", CALC_LEN, menu_context.interface);
+    COMM_TransmitTaggedText(HMI_TAG_NOTIFY,
+        "TX REQUEST FAILED: No space in TX queue for message\r\n",
+        menu_context.interface);
     osEventFlagsClear(print_event_handle, MESS_MAC_TX_SPACE);
   }
   if (flags & MESS_MAC_DROPPED_MESSAGE) {
-    COMM_TransmitData("TX REQUEST FAILED: Channel did not free in time\r\n", CALC_LEN, menu_context.interface);
+    COMM_TransmitTaggedText(HMI_TAG_NOTIFY,
+        "TX REQUEST FAILED: Channel did not free in time\r\n",
+        menu_context.interface);
     osEventFlagsClear(print_event_handle, MESS_MAC_DROPPED_MESSAGE);
   }
   if (flags & MESS_FAILED_RANGING_REQUEST) {
-    COMM_TransmitData("Failed to send ranging request\r\n", CALC_LEN, menu_context.interface);
+    COMM_TransmitTaggedText(HMI_TAG_NOTIFY,
+        "Failed to send ranging request\r\n", menu_context.interface);
     osEventFlagsClear(print_event_handle, MESS_FAILED_RANGING_REQUEST);
   }
   if (flags & MESS_FAILED_RANGING_RESPONSE) {
-    COMM_TransmitData("Received ranging request, but could not respond\r\n", CALC_LEN, menu_context.interface);
+    COMM_TransmitTaggedText(HMI_TAG_NOTIFY,
+        "Received ranging request, but could not respond\r\n",
+        menu_context.interface);
     osEventFlagsClear(print_event_handle, MESS_FAILED_RANGING_RESPONSE);
   }
   if (flags & MESS_RECEIVED_RANGING_RESPONSE_BAD) {
-    COMM_TransmitData("Received valid ranging response, but could not add to queue\r\n", CALC_LEN, menu_context.interface);
+    COMM_TransmitTaggedText(HMI_TAG_NOTIFY,
+        "Received valid ranging response, but could not add to queue\r\n",
+        menu_context.interface);
     osEventFlagsClear(print_event_handle, MESS_RECEIVED_RANGING_RESPONSE_BAD);
   }
 }
@@ -409,4 +757,182 @@ void resetTask(void)
 {
   USB_Init();
   DAU_Init();
+}
+
+static const char* getHmiTagString(HmiTag_t tag)
+{
+  switch (tag) {
+    case HMI_TAG_MENU:
+      return "MENU";
+    case HMI_TAG_PROMPT:
+      return "PROMPT";
+    case HMI_TAG_STATUS:
+      return "STATUS";
+    case HMI_TAG_ERROR:
+      return "ERROR";
+    case HMI_TAG_NOTIFY:
+      return "NOTIFY";
+    case HMI_TAG_MSG_RX:
+      return "MSG_RX";
+    default:
+      return "STATUS";
+  }
+}
+
+static void transmitHmiLineInternal(HmiTag_t tag, const char* text,
+                                    CommInterface_t interface, bool force_tag)
+{
+  char line_buffer[MAX_COMM_OUT_BUFFER_SIZE];
+  const char* safe_text = (text != NULL) ? text : "";
+
+  if (force_tag == true || hmi_session.tag_mode == true) {
+    finalizePromptLineIfNeeded(interface);
+    snprintf(line_buffer, sizeof(line_buffer), "[%s] %s\r\n", getHmiTagString(tag),
+             safe_text);
+  }
+  else {
+    snprintf(line_buffer, sizeof(line_buffer), "%s\r\n", safe_text);
+  }
+
+  COMM_TransmitData(line_buffer, CALC_LEN, interface);
+}
+
+static void transmitHmiPromptInternal(const char* text, CommInterface_t interface)
+{
+  char prompt_buffer[MAX_COMM_OUT_BUFFER_SIZE];
+  const char* safe_text = (text != NULL) ? text : "";
+
+  if (hmi_session.prompt_enabled == false) {
+    hmi_session.prompt_active = false;
+    return;
+  }
+
+  if (hmi_session.tag_mode == true) {
+    finalizePromptLineIfNeeded(interface);
+    snprintf(prompt_buffer, sizeof(prompt_buffer), "[%s] %s > ",
+             getHmiTagString(HMI_TAG_PROMPT), safe_text);
+    hmi_session.prompt_active = true;
+  }
+  else {
+    snprintf(prompt_buffer, sizeof(prompt_buffer), "%s\r\n", safe_text);
+    hmi_session.prompt_active = false;
+  }
+
+  COMM_TransmitData(prompt_buffer, CALC_LEN, interface);
+}
+
+static void transmitFormattedHmiLine(HmiTag_t tag, CommInterface_t interface,
+                                     bool force_tag, const char* format, va_list args)
+{
+  char text_buffer[MAX_COMM_OUT_BUFFER_SIZE];
+
+  vsnprintf(text_buffer, sizeof(text_buffer), format, args);
+  transmitHmiLineInternal(tag, text_buffer, interface, force_tag);
+}
+
+static void finalizePromptLineIfNeeded(CommInterface_t interface)
+{
+  if (hmi_session.prompt_active == true) {
+    COMM_TransmitData("\r\n", 2, interface);
+    hmi_session.prompt_active = false;
+  }
+}
+
+static size_t appendMachineToken(char* buffer, size_t buffer_size, size_t offset,
+                                 const char* format, ...)
+{
+  if (buffer == NULL || buffer_size == 0 || offset >= buffer_size) {
+    return offset;
+  }
+
+  va_list args;
+  va_start(args, format);
+  int written = vsnprintf(buffer + offset, buffer_size - offset, format, args);
+  va_end(args);
+
+  if (written < 0) {
+    buffer[offset] = '\0';
+    return offset;
+  }
+
+  size_t next_offset = offset + (size_t) written;
+  if (next_offset >= buffer_size) {
+    return buffer_size - 1;
+  }
+
+  return next_offset;
+}
+
+static const char* messageRouteString(MessageType_t type)
+{
+  switch (type) {
+    case MSG_RECEIVED_TRANSDUCER:
+    case MSG_TRANSMIT_TRANSDUCER:
+      return "transducer";
+    case MSG_RECEIVED_FEEDBACK:
+    case MSG_TRANSMIT_FEEDBACK:
+      return "feedback";
+    default:
+      return "unknown";
+  }
+}
+
+static const char* protocolString(MessagingProtocol_t protocol)
+{
+  switch (protocol) {
+    case PROTOCOL_CUSTOM:
+      return "custom";
+    case PROTOCOL_JANUS:
+      return "janus";
+    default:
+      return "unknown";
+  }
+}
+
+static const char* customTypeString(CustomMessageData_t data_type)
+{
+  switch (data_type) {
+    case INTEGER:
+      return "integer";
+    case STRING:
+      return "string";
+    case FLOAT:
+      return "float";
+    case BITS:
+      return "bits";
+    case RANGING_REQUEST:
+      return "ranging_request";
+    case RANGING_RESPONSE:
+      return "ranging_response";
+    case EVAL:
+      return "eval";
+    case UNKNOWN:
+    default:
+      return "unknown";
+  }
+}
+
+static const char* janusTypeString(JanusMessageData_t data_type)
+{
+  switch (data_type) {
+    case JANUS_011_01_SMS:
+      return "sms";
+    case JANUS_011_02_TXT:
+      return "txt";
+    case JANUS_011_03_TXT_ACK:
+      return "txt_ack";
+    case JANUS_UNKNOWN:
+    default:
+      return "unknown";
+  }
+}
+
+static void appendPreambleFieldToken(char* buffer, size_t buffer_size, size_t* offset,
+                                     const char* key, PreambleValue_t value)
+{
+  if (buffer == NULL || offset == NULL || key == NULL || value.valid != true) {
+    return;
+  }
+
+  *offset = appendMachineToken(buffer, buffer_size, *offset, " %s=%u", key, value.value);
 }

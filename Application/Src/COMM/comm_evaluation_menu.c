@@ -165,6 +165,9 @@ void sendEvalTransducer(FunctionContext_t* context)
 void startFeedbackTests(FunctionContext_t* context) 
 {
   osEventFlagsSet(print_event_handle, MESS_FEEDBACK_TESTS);
+  COMM_TransmitTaggedText(HMI_TAG_STATUS,
+      "\r\nStarted feedback network tests\r\n",
+      context->comm_interface);
 
   context->state->state = PARAM_STATE_COMPLETE;
 }
@@ -177,27 +180,34 @@ void sendEvalMessage(FunctionContext_t* context, Message_t* msg)
   msg->preamble.message_type.value = EVAL;
   msg->preamble.message_type.valid = true;
   if (Param_GetUint8(PARAM_ID, (uint8_t*) &msg->preamble.modem_id.value) == false) {
-    COMM_TransmitData("\r\nError getting sender ID. Message not sent\r\n", 
-        CALC_LEN, context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_ERROR,
+        "\r\nError getting sender ID. Message not sent\r\n",
+        context->comm_interface);
     context->state->state = PARAM_STATE_COMPLETE;
     return;
   }
   msg->preamble.modem_id.valid = true;
   if (Param_GetUint16(PARAM_EVAL_MESSAGE_LEN, &msg->length_bits) == false) {
-    COMM_TransmitData("\r\nError getting evaluation message length. Message not sent\r\n", 
-      CALC_LEN, context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_ERROR,
+        "\r\nError getting evaluation message length. Message not sent\r\n",
+        context->comm_interface);
     context->state->state = PARAM_STATE_COMPLETE;
     return;
   }
   msg->length_bits *= 8;
 
   if (osMessageQueuePut(regular_tx_queue, msg, 0, 0) == osOK) {
-    sprintf((char*) context->output_buffer, "\r\nSuccessfully added to feedback queue!\r\n\r\n");
+    sprintf((char*) context->output_buffer, "\r\nSuccessfully added to %s queue!\r\n\r\n",
+            (msg->type == MSG_TRANSMIT_FEEDBACK) ? "feedback network" : "transducer");
+    COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                            context->comm_interface);
   }
   else {
-    sprintf((char*) context->output_buffer, "\r\nError adding message to feedback queue\r\n\r\n");
+    sprintf((char*) context->output_buffer, "\r\nError adding message to %s queue\r\n\r\n",
+            (msg->type == MSG_TRANSMIT_FEEDBACK) ? "feedback network" : "transducer");
+    COMM_TransmitTaggedText(HMI_TAG_ERROR, (char*) context->output_buffer,
+                            context->comm_interface);
   }
-  COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
 
   context->state->state = PARAM_STATE_COMPLETE;
 }

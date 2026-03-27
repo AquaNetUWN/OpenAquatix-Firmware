@@ -11,15 +11,26 @@
 /* Private includes ----------------------------------------------------------*/
 
 #include "comm_commands.h"
+#include "cfg_import_export.h"
 #include "cfg_parameters.h"
+#include "comm_main.h"
+#include "mac_main.h"
+#include "mac_protocol.h"
+#include "mess_main.h"
+#include "main.h"
+#include "cmsis_os.h"
+
+#include "base64.h"
 
 #include <ctype.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Private typedef -----------------------------------------------------------*/
 
-typedef bool (*CommandHandler_t)(CommandContext_t* context, const char* args);
+typedef bool (*CommandHandler_t)(CommandContext_t* context, char* args);
 
 typedef struct {
   const char* name;
@@ -30,24 +41,53 @@ typedef struct {
 
 /* Private function prototypes -----------------------------------------------*/
 
-// Utility functions
+// Helper functions for command parsing and execution
 static char* trimWhitespace(char* text);
 static const CommandEntry_t* findCommand(const char* name);
 static const char* normalizeCommandName(const char* name);
-static bool parseOnOffArgument(const char* args, bool* enabled);
+static bool stringsEqualIgnoreCase(const char* lhs, const char* rhs);
+static bool parseOnOffArgument(char* args, bool* enabled);
+static bool parseArguments(char* args, char* argv[], int max_args, int* argc);
+static bool parseKeyValueArgument(char* arg, char** key, char** value);
+static bool parseBooleanValue(const char* text, bool* enabled);
+static bool parseUint32Value(const char* text, uint32_t* value);
+static bool parseUint16Value(const char* text, uint16_t* value);
+static bool parseProtocolValue(const char* text, MessagingProtocol_t* protocol);
+static bool parseCustomTypeValue(const char* text, CustomMessageData_t* data_type);
+static bool parseJanusTypeValue(const char* text, JanusMessageData_t* data_type);
+static const char* protocolToString(MessagingProtocol_t protocol);
+static const char* macModeToString(bool host_mode_enabled);
+static bool queueRegularMessage(const Message_t* msg);
+static bool transmitMessage(const char* data, bool use_feedback);
+static bool handleImmediateTransmitCommand(CommandContext_t* context, char* args,
+                                           const CommandEntry_t* command,
+                                           const char* command_name);
+static void initializeMessage(Message_t* msg);
+static bool setPreambleOverride(Message_t* msg, const char* key, const char* value);
 
-// Help command helpers
+// String conversion helpers for human-readable output
 static void transmitCommandUsage(CommInterface_t interface, const CommandEntry_t* command);
 static void transmitCommandHelp(CommInterface_t interface, const CommandEntry_t* command);
 
 // Command handlers
-static bool handleHelpCommand(CommandContext_t* context, const char* args);
-static bool handleTagCommand(CommandContext_t* context, const char* args);
-static bool handlePrintCommand(CommandContext_t* context, const char* args);
-static bool handleTransmitCommand(CommandContext_t* context, const char* args);
-static bool handleConfigCommand(CommandContext_t* context, const char* args);
+static bool handleHelpCommand(CommandContext_t* context, char* args);
+static bool handleTagCommand(CommandContext_t* context, char* args);
+static bool handlePromptCommand(CommandContext_t* context, char* args);
+static bool handlePrintCommand(CommandContext_t* context, char* args);
+static bool handleModeCommand(CommandContext_t* context, char* args);
+static bool handleTimeCommand(CommandContext_t* context, char* args);
+static bool handleTransmitCommand(CommandContext_t* context, char* args);
+static bool handleTransmitAtCommand(CommandContext_t* context, char* args);
+static bool handleCancelTxCommand(CommandContext_t* context, char* args);
+static bool handleRxSubscriptionCommand(CommandContext_t* context, char* args);
+static bool handleSenseSubscriptionCommand(CommandContext_t* context, char* args);
+static bool handleStatusCommand(CommandContext_t* context, char* args);
+static bool handleImportConfigCommand(CommandContext_t* context, char* args);
+static bool handleConfigCommand(CommandContext_t* context, char* args);
 
 /* Private variables ---------------------------------------------------------*/
+
+extern osMessageQueueId_t regular_tx_queue;
 
 static const CommandEntry_t commands[] = {
   {
@@ -63,20 +103,74 @@ static const CommandEntry_t commands[] = {
     handleTagCommand
   },
   {
+    "prompt",
+    "Enable or disable HMI prompts for the current session",
+    COMM_COMMAND_DELIMITER_STR "prompt on|off",
+    handlePromptCommand
+  },
+  {
     "print",
     "Enable or disable printing of received messages",
     COMM_COMMAND_DELIMITER_STR "print on|off",
     handlePrintCommand
   },
   {
+    "mode",
+    "Enable or disable host-controlled MAC mode",
+    COMM_COMMAND_DELIMITER_STR "mode hostmac on|off",
+    handleModeCommand
+  },
+  {
+    "time",
+    "Return the current device time bases used for host scheduling",
+    COMM_COMMAND_DELIMITER_STR "time",
+    handleTimeCommand
+  },
+  {
     "tx",
-    "Transmit a message, data should be base64 encoded",
-    COMM_COMMAND_DELIMITER_STR "tx <base64_data>",
+    "Transmit a base64 payload immediately through the selected route",
+    COMM_COMMAND_DELIMITER_STR "tx route=<transducer|feedback> payload=<base64>",
     handleTransmitCommand
   },
   {
+    "txat",
+    "Schedule a host-controlled transmission at a future device CYCCNT",
+    COMM_COMMAND_DELIMITER_STR "txat route=<transducer|feedback> protocol=<custom|janus> payload=<base64> tx_cyccnt=<u32> [type=<custom_type>] [janus_type=sms] [modem_id=<u16>] [is_mobile=<0|1>] [reservation_time_10ms=<u16>] [schedule_flag=<u16>] [destination_id=<u16>] [tx_rx_capable=<0|1>] [can_forward=<0|1>] [coding=<u16>] [encryption=<u16>]",
+    handleTransmitAtCommand
+  },
+  {
+    "cancel_tx",
+    "Cancel a pending host-scheduled transmission",
+    COMM_COMMAND_DELIMITER_STR "cancel_tx <request_id>",
+    handleCancelTxCommand
+  },
+  {
+    "rxsub",
+    "Enable or disable machine-readable RX event streaming",
+    COMM_COMMAND_DELIMITER_STR "rxsub on|off",
+    handleRxSubscriptionCommand
+  },
+  {
+    "sense",
+    "Enable or disable machine-readable channel sensing event streaming",
+    COMM_COMMAND_DELIMITER_STR "sense on|off",
+    handleSenseSubscriptionCommand
+  },
+  {
+    "status",
+    "Report host MAC mode, subscriptions, queue depths, and pending scheduled TX state",
+    COMM_COMMAND_DELIMITER_STR "status",
+    handleStatusCommand
+  },
+  {
+    "importcfg",
+    "Import configuration data using the same START...END blob accepted by the menu importer",
+    COMM_COMMAND_DELIMITER_STR "importcfg <START,...,END>",
+    handleImportConfigCommand
+  },
+  {
     "config",
-    "Get or set configuration parameters. Use without arguments to list all parameters and their values. Use get or set followed by the parameter name to get or set a specific parameter. When setting a parameter, include the new value after the parameter name. For example: " COMM_COMMAND_DELIMITER_STR "config set PARAM_NAME value",
+    "Get or set configuration parameters",
     COMM_COMMAND_DELIMITER_STR "config [get|set <parameter_name> [value]]",
     handleConfigCommand
   }
@@ -103,7 +197,7 @@ bool COMM_Commands_Process(const char* input, CommandContext_t* context)
   cursor++;
   cursor = trimWhitespace(cursor);
 
-  context->redraw_menu = true;
+  context->redraw_menu = false;
 
   if (*cursor == '\0') {
     COMM_TransmitHmiMachineLine(HMI_TAG_ERROR, "Missing command name", context->interface);
@@ -163,7 +257,7 @@ static const CommandEntry_t* findCommand(const char* name)
   }
 
   for (uint32_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
-    if (strcmp(commands[i].name, normalized_name) == 0) {
+    if (stringsEqualIgnoreCase(commands[i].name, normalized_name) == true) {
       return &commands[i];
     }
   }
@@ -192,19 +286,469 @@ static const char* normalizeCommandName(const char* name)
   return name;
 }
 
-static bool parseOnOffArgument(const char* args, bool* enabled)
+static bool stringsEqualIgnoreCase(const char* lhs, const char* rhs)
 {
-  if (args == NULL || enabled == NULL) {
+  if (lhs == NULL || rhs == NULL) {
     return false;
   }
 
-  if (strcmp(args, "on") == 0) {
+  while (*lhs != '\0' && *rhs != '\0') {
+    if (tolower((unsigned char) *lhs) != tolower((unsigned char) *rhs)) {
+      return false;
+    }
+    lhs++;
+    rhs++;
+  }
+
+  return *lhs == '\0' && *rhs == '\0';
+}
+
+static bool parseOnOffArgument(char* args, bool* enabled)
+{
+  char* argv[1];
+  int argc = 0;
+
+  if (enabled == NULL) {
+    return false;
+  }
+
+  if (parseArguments(args, argv, 1, &argc) == false || argc != 1) {
+    return false;
+  }
+
+  return parseBooleanValue(argv[0], enabled);
+}
+
+static bool parseArguments(char* args, char* argv[], int max_args, int* argc)
+{
+  int parsed_argc = 0;
+  char* read_cursor;
+  char* write_cursor;
+
+  if (argc == NULL || max_args < 0 || (max_args > 0 && argv == NULL)) {
+    return false;
+  }
+
+  *argc = 0;
+
+  if (args == NULL) {
+    return true;
+  }
+
+  read_cursor = trimWhitespace(args);
+  if (read_cursor == NULL || *read_cursor == '\0') {
+    return true;
+  }
+
+  write_cursor = read_cursor;
+
+  while (*read_cursor != '\0') {
+    char quote = '\0';
+
+    while (*read_cursor != '\0' && isspace((unsigned char) *read_cursor) != 0) {
+      read_cursor++;
+    }
+
+    if (*read_cursor == '\0') {
+      break;
+    }
+
+    if (parsed_argc >= max_args) {
+      return false;
+    }
+
+    argv[parsed_argc++] = write_cursor;
+
+    while (*read_cursor != '\0') {
+      char current = *read_cursor++;
+
+      if (current == '\\') {
+        if (*read_cursor != '\0') {
+          *write_cursor++ = *read_cursor++;
+        }
+        else {
+          *write_cursor++ = current;
+        }
+        continue;
+      }
+
+      if (quote != '\0') {
+        if (current == quote) {
+          quote = '\0';
+        }
+        else {
+          *write_cursor++ = current;
+        }
+        continue;
+      }
+
+      if (current == '"' || current == '\'') {
+        quote = current;
+        continue;
+      }
+
+      if (isspace((unsigned char) current) != 0) {
+        break;
+      }
+
+      *write_cursor++ = current;
+    }
+
+    if (quote != '\0') {
+      return false;
+    }
+
+    *write_cursor++ = '\0';
+  }
+
+  *argc = parsed_argc;
+  return true;
+}
+
+static bool parseKeyValueArgument(char* arg, char** key, char** value)
+{
+  if (arg == NULL || key == NULL || value == NULL) {
+    return false;
+  }
+
+  char* equals = strchr(arg, '=');
+  if (equals == NULL || equals == arg || *(equals + 1) == '\0') {
+    return false;
+  }
+
+  *equals = '\0';
+  *key = arg;
+  *value = equals + 1;
+  return true;
+}
+
+static bool parseBooleanValue(const char* text, bool* enabled)
+{
+  if (text == NULL || enabled == NULL) {
+    return false;
+  }
+
+  if (stringsEqualIgnoreCase(text, "on") == true ||
+      stringsEqualIgnoreCase(text, "true") == true ||
+      stringsEqualIgnoreCase(text, "yes") == true ||
+      strcmp(text, "1") == 0) {
     *enabled = true;
     return true;
   }
 
-  if (strcmp(args, "off") == 0) {
+  if (stringsEqualIgnoreCase(text, "off") == true ||
+      stringsEqualIgnoreCase(text, "false") == true ||
+      stringsEqualIgnoreCase(text, "no") == true ||
+      strcmp(text, "0") == 0) {
     *enabled = false;
+    return true;
+  }
+
+  return false;
+}
+
+static bool parseUint32Value(const char* text, uint32_t* value)
+{
+  if (text == NULL || value == NULL || *text == '\0') {
+    return false;
+  }
+
+  char* end_ptr = NULL;
+  unsigned long parsed_value = strtoul(text, &end_ptr, 0);
+  if (*end_ptr != '\0') {
+    return false;
+  }
+
+  *value = (uint32_t) parsed_value;
+  return true;
+}
+
+static bool parseUint16Value(const char* text, uint16_t* value)
+{
+  uint32_t parsed_value;
+  if (parseUint32Value(text, &parsed_value) == false || parsed_value > UINT16_MAX) {
+    return false;
+  }
+
+  *value = (uint16_t) parsed_value;
+  return true;
+}
+
+static bool parseProtocolValue(const char* text, MessagingProtocol_t* protocol)
+{
+  if (text == NULL || protocol == NULL) {
+    return false;
+  }
+
+  if (stringsEqualIgnoreCase(text, "custom") == true) {
+    *protocol = PROTOCOL_CUSTOM;
+    return true;
+  }
+
+  if (stringsEqualIgnoreCase(text, "janus") == true) {
+    *protocol = PROTOCOL_JANUS;
+    return true;
+  }
+
+  return false;
+}
+
+static bool parseCustomTypeValue(const char* text, CustomMessageData_t* data_type)
+{
+  if (text == NULL || data_type == NULL) {
+    return false;
+  }
+
+  if (stringsEqualIgnoreCase(text, "integer") == true) {
+    *data_type = INTEGER;
+    return true;
+  }
+  if (stringsEqualIgnoreCase(text, "string") == true) {
+    *data_type = STRING;
+    return true;
+  }
+  if (stringsEqualIgnoreCase(text, "float") == true) {
+    *data_type = FLOAT;
+    return true;
+  }
+  if (stringsEqualIgnoreCase(text, "bits") == true) {
+    *data_type = BITS;
+    return true;
+  }
+  if (stringsEqualIgnoreCase(text, "ranging_request") == true) {
+    *data_type = RANGING_REQUEST;
+    return true;
+  }
+  if (stringsEqualIgnoreCase(text, "ranging_response") == true) {
+    *data_type = RANGING_RESPONSE;
+    return true;
+  }
+  if (stringsEqualIgnoreCase(text, "eval") == true) {
+    *data_type = EVAL;
+    return true;
+  }
+
+  return false;
+}
+
+static bool parseJanusTypeValue(const char* text, JanusMessageData_t* data_type)
+{
+  if (text == NULL || data_type == NULL) {
+    return false;
+  }
+
+  if (stringsEqualIgnoreCase(text, "sms") == true) {
+    *data_type = JANUS_011_01_SMS;
+    return true;
+  }
+
+  return false;
+}
+
+static const char* protocolToString(MessagingProtocol_t protocol)
+{
+  switch (protocol) {
+    case PROTOCOL_CUSTOM:
+      return "custom";
+    case PROTOCOL_JANUS:
+      return "janus";
+    default:
+      return "unknown";
+  }
+}
+
+static const char* macModeToString(bool host_mode_enabled)
+{
+  return host_mode_enabled ? "hostmac" : "local";
+}
+
+static bool queueRegularMessage(const Message_t* msg)
+{
+  if (regular_tx_queue == NULL || msg == NULL) {
+    return false;
+  }
+
+  return osMessageQueuePut(regular_tx_queue, msg, 0, 0) == osOK;
+}
+
+static bool transmitMessage(const char* data, bool use_feedback)
+{
+  if (data == NULL) {
+    return false;
+  }
+
+  size_t decoded_length = 0;
+  unsigned char* decoded_data = base64_decode((const unsigned char*) data, strlen(data), &decoded_length);
+  if (decoded_data == NULL || decoded_length > PACKET_DATA_MAX_LENGTH_BYTES) {
+    free(decoded_data);
+    return false;
+  }
+
+  Message_t msg;
+  initializeMessage(&msg);
+  msg.protocol = PROTOCOL_CUSTOM;
+  msg.type = use_feedback ? MSG_TRANSMIT_FEEDBACK : MSG_TRANSMIT_TRANSDUCER;
+  msg.timestamp = osKernelGetTickCount();
+  msg.data_type = BITS;
+  msg.preamble.message_type.value = BITS;
+  msg.preamble.message_type.valid = true;
+  msg.length_bits = decoded_length * 8U;
+  memcpy(msg.data, decoded_data, decoded_length);
+
+  free(decoded_data);
+  return queueRegularMessage(&msg);
+}
+
+static bool handleImmediateTransmitCommand(CommandContext_t* context, char* args,
+                                           const CommandEntry_t* command,
+                                           const char* command_name)
+{
+  char* argv[8];
+  int argc = 0;
+  bool use_feedback = false;
+  bool have_route = false;
+  bool have_payload = false;
+  const char* payload = NULL;
+
+  if (context == NULL || command == NULL || command_name == NULL) {
+    return false;
+  }
+
+  if (parseArguments(args, argv, 8, &argc) == false || argc == 0) {
+    return false;
+  }
+
+  for (int i = 0; i < argc; i++) {
+    char* key = NULL;
+    char* value = NULL;
+    if (parseKeyValueArgument(argv[i], &key, &value) == false) {
+      COMM_TransmitHmiMachineLinef(HMI_TAG_ERROR, context->interface,
+          "Invalid %s argument: %s", command_name, argv[i]);
+      return true;
+    }
+
+    if (stringsEqualIgnoreCase(key, "route") == true) {
+      if (stringsEqualIgnoreCase(value, "transducer") == true) {
+        use_feedback = false;
+        have_route = true;
+      }
+      else if (stringsEqualIgnoreCase(value, "feedback") == true) {
+        use_feedback = true;
+        have_route = true;
+      }
+      else {
+        COMM_TransmitHmiMachineLinef(HMI_TAG_ERROR, context->interface,
+            "Invalid route: %s", value);
+        return true;
+      }
+      continue;
+    }
+
+    if (stringsEqualIgnoreCase(key, "payload") == true ||
+        stringsEqualIgnoreCase(key, "data") == true ||
+        stringsEqualIgnoreCase(key, "b64") == true) {
+      payload = value;
+      have_payload = true;
+      continue;
+    }
+
+    COMM_TransmitHmiMachineLinef(HMI_TAG_ERROR, context->interface,
+        "Unknown %s option: %s", command_name, key);
+    return true;
+  }
+
+  if (have_route == false || have_payload == false || payload == NULL || *payload == '\0') {
+    transmitCommandUsage(context->interface, command);
+    return true;
+  }
+
+  if (transmitMessage(payload, use_feedback) == false) {
+    COMM_TransmitHmiMachineLinef(HMI_TAG_ERROR, context->interface,
+        "Failed to queue %s transmission",
+        use_feedback ? "feedback" : "transducer");
+    return true;
+  }
+
+  COMM_TransmitHmiMachineLinef(HMI_TAG_STATUS, context->interface,
+      "OK %c%s route=%s",
+      COMM_COMMAND_DELIMITER,
+      command_name,
+      use_feedback ? "feedback" : "transducer");
+  return true;
+}
+
+static void initializeMessage(Message_t* msg)
+{
+  if (msg == NULL) {
+    return;
+  }
+
+  memset(msg, 0, sizeof(*msg));
+  msg->protocol = PROTOCOL_CUSTOM;
+  msg->delay = false;
+}
+
+static bool setPreambleOverride(Message_t* msg, const char* key, const char* value)
+{
+  uint16_t parsed_u16 = 0;
+  bool parsed_bool = false;
+
+  if (msg == NULL || key == NULL || value == NULL) {
+    return false;
+  }
+
+  if (stringsEqualIgnoreCase(key, "modem_id") == true) {
+    if (parseUint16Value(value, &parsed_u16) == false) return false;
+    msg->preamble.modem_id.value = parsed_u16;
+    msg->preamble.modem_id.valid = true;
+    return true;
+  }
+  if (stringsEqualIgnoreCase(key, "is_mobile") == true) {
+    if (parseBooleanValue(value, &parsed_bool) == false) return false;
+    msg->preamble.is_mobile.value = parsed_bool ? 1U : 0U;
+    msg->preamble.is_mobile.valid = true;
+    return true;
+  }
+  if (stringsEqualIgnoreCase(key, "reservation_time_10ms") == true) {
+    if (parseUint16Value(value, &parsed_u16) == false) return false;
+    msg->preamble.reservation_time_10ms.value = parsed_u16;
+    msg->preamble.reservation_time_10ms.valid = true;
+    return true;
+  }
+  if (stringsEqualIgnoreCase(key, "schedule_flag") == true) {
+    if (parseUint16Value(value, &parsed_u16) == false) return false;
+    msg->preamble.schedule_flag.value = parsed_u16;
+    msg->preamble.schedule_flag.valid = true;
+    return true;
+  }
+  if (stringsEqualIgnoreCase(key, "destination_id") == true) {
+    if (parseUint16Value(value, &parsed_u16) == false) return false;
+    msg->preamble.destination_id.value = parsed_u16;
+    msg->preamble.destination_id.valid = true;
+    return true;
+  }
+  if (stringsEqualIgnoreCase(key, "tx_rx_capable") == true) {
+    if (parseBooleanValue(value, &parsed_bool) == false) return false;
+    msg->preamble.tx_rx_capable.value = parsed_bool ? 1U : 0U;
+    msg->preamble.tx_rx_capable.valid = true;
+    return true;
+  }
+  if (stringsEqualIgnoreCase(key, "can_forward") == true) {
+    if (parseBooleanValue(value, &parsed_bool) == false) return false;
+    msg->preamble.can_forward.value = parsed_bool ? 1U : 0U;
+    msg->preamble.can_forward.valid = true;
+    return true;
+  }
+  if (stringsEqualIgnoreCase(key, "coding") == true) {
+    if (parseUint16Value(value, &parsed_u16) == false) return false;
+    msg->preamble.coding.value = parsed_u16;
+    msg->preamble.coding.valid = true;
+    return true;
+  }
+  if (stringsEqualIgnoreCase(key, "encryption") == true) {
+    if (parseUint16Value(value, &parsed_u16) == false) return false;
+    msg->preamble.encryption.value = parsed_u16;
+    msg->preamble.encryption.valid = true;
     return true;
   }
 
@@ -226,13 +770,20 @@ static void transmitCommandHelp(CommInterface_t interface, const CommandEntry_t*
       "Usage: %s", command->usage);
 }
 
-static bool handleHelpCommand(CommandContext_t* context, const char* args)
+static bool handleHelpCommand(CommandContext_t* context, char* args)
 {
+  char* argv[1];
+  int argc = 0;
+
   if (context == NULL) {
     return false;
   }
 
-  if (args == NULL || *trimWhitespace((char*) args) == '\0') {
+  if (parseArguments(args, argv, 1, &argc) == false) {
+    return false;
+  }
+
+  if (argc == 0) {
     COMM_TransmitHmiMachineLine(HMI_TAG_STATUS, "Available commands:", context->interface);
 
     for (uint32_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
@@ -246,12 +797,12 @@ static bool handleHelpCommand(CommandContext_t* context, const char* args)
     return true;
   }
 
-  const CommandEntry_t* command = findCommand(args);
+  const CommandEntry_t* command = findCommand(argv[0]);
   if (command == NULL) {
     COMM_TransmitHmiMachineLinef(HMI_TAG_ERROR, context->interface,
         "Unknown command: %s%s",
         COMM_COMMAND_DELIMITER_STR,
-        normalizeCommandName(args));
+        normalizeCommandName(argv[0]));
     return true;
   }
 
@@ -259,33 +810,366 @@ static bool handleHelpCommand(CommandContext_t* context, const char* args)
   return true;
 }
 
-static bool handleTagCommand(CommandContext_t* context, const char* args)
+static bool handleTagCommand(CommandContext_t* context, char* args)
 {
-  // Not implemented yet
-  COMM_TransmitHmiMachineLine(HMI_TAG_ERROR,
-      "Transmit command not implemented yet", context->interface);
+  bool enabled;
+
+  if (parseOnOffArgument(args, &enabled) == false) {
+    return false;
+  }
+
+  COMM_SetTagMode(enabled);
+  COMM_TransmitHmiMachineLinef(HMI_TAG_STATUS, context->interface,
+      "OK %ctag %s", COMM_COMMAND_DELIMITER, enabled ? "on" : "off");
   return true;
 }
 
-static bool handlePrintCommand(CommandContext_t* context, const char* args)
+static bool handlePromptCommand(CommandContext_t* context, char* args)
 {
-  // Not implemented yet
-  COMM_TransmitHmiMachineLine(HMI_TAG_ERROR,
-      "Transmit command not implemented yet", context->interface);
+  bool enabled;
+
+  if (parseOnOffArgument(args, &enabled) == false) {
+    return false;
+  }
+
+  COMM_SetPromptEnabled(enabled);
+  COMM_TransmitHmiMachineLinef(HMI_TAG_STATUS, context->interface,
+      "OK %cprompt %s", COMM_COMMAND_DELIMITER, enabled ? "on" : "off");
   return true;
 }
 
-static bool handleTransmitCommand(CommandContext_t* context, const char* args)
+static bool handlePrintCommand(CommandContext_t* context, char* args)
 {
-  // Not implemented yet
-  COMM_TransmitHmiMachineLine(HMI_TAG_ERROR,
-      "Transmit command not implemented yet", context->interface);
+  bool enabled;
+
+  if (parseOnOffArgument(args, &enabled) == false) {
+    return false;
+  }
+
+  uint8_t print_enabled = enabled ? 1U : 0U;
+  if (Param_SetUint8(PARAM_PRINT_ENABLED, &print_enabled) == PARAM_SET_SUCCESS) {
+    COMM_TransmitHmiMachineLinef(HMI_TAG_STATUS, context->interface,
+        "OK %cprint %s", COMM_COMMAND_DELIMITER, enabled ? "on" : "off");
+  }
+  else {
+    COMM_TransmitHmiMachineLine(HMI_TAG_ERROR,
+        "Failed to set printing received messages", context->interface);
+  }
+
   return true;
 }
 
-static bool handleConfigCommand(CommandContext_t* context, const char* args)
+static bool handleModeCommand(CommandContext_t* context, char* args)
 {
-  // Not implemented yet
+  char* argv[2];
+  int argc = 0;
+
+  if (parseArguments(args, argv, 2, &argc) == false || argc != 2) {
+    return false;
+  }
+
+  if (stringsEqualIgnoreCase(argv[0], "hostmac") == false) {
+    return false;
+  }
+
+  bool enabled;
+  if (parseBooleanValue(argv[1], &enabled) == false) {
+    return false;
+  }
+
+  uint8_t protocol = enabled ? MAC_PROTOCOL_HOST_CONTROL : MAC_PROTOCOL_NONE;
+  if (Param_SetUint8(PARAM_MAC, &protocol) != PARAM_SET_SUCCESS) {
+    COMM_TransmitHmiMachineLine(HMI_TAG_ERROR,
+        "Failed to update MAC mode", context->interface);
+    return true;
+  }
+
+  COMM_TransmitHmiMachineLinef(HMI_TAG_STATUS, context->interface,
+      "OK %cmode hostmac %s", COMM_COMMAND_DELIMITER, enabled ? "on" : "off");
+  return true;
+}
+
+static bool handleTimeCommand(CommandContext_t* context, char* args)
+{
+  char* argv[1];
+  int argc = 0;
+
+  if (parseArguments(args, argv, 1, &argc) == false || argc != 0) {
+    return false;
+  }
+
+  COMM_TransmitHmiMachineLinef(HMI_TAG_STATUS, context->interface,
+      "OK %ctime tick_ms=%llu cyccnt=%lu",
+      COMM_COMMAND_DELIMITER,
+      (unsigned long long) HAL_AbsoluteTimestamp(),
+      (unsigned long) DWT->CYCCNT);
+  return true;
+}
+
+static bool handleTransmitCommand(CommandContext_t* context, char* args)
+{
+  return handleImmediateTransmitCommand(context, args, &commands[6], "tx");
+}
+
+static bool handleTransmitAtCommand(CommandContext_t* context, char* args)
+{
+  char* argv[20];
+  int argc = 0;
+
+  if (parseArguments(args, argv, 20, &argc) == false || argc < 4) {
+    return false;
+  }
+
+  if (MAC_IsHostModeEnabled() == false) {
+    COMM_TransmitHmiMachineLine(HMI_TAG_ERROR,
+        "Host MAC mode must be enabled before using :txat", context->interface);
+    return true;
+  }
+
+  Message_t msg;
+  initializeMessage(&msg);
+  msg.timestamp = osKernelGetTickCount();
+  msg.delay = true;
+  msg.janus_data_type = JANUS_011_01_SMS;
+
+  bool have_route = false;
+  bool have_protocol = false;
+  bool have_payload = false;
+  bool have_tx_cyccnt = false;
+  bool have_custom_type = false;
+
+  for (int i = 0; i < argc; i++) {
+    char* key = NULL;
+    char* value = NULL;
+    if (parseKeyValueArgument(argv[i], &key, &value) == false) {
+      COMM_TransmitHmiMachineLinef(HMI_TAG_ERROR, context->interface,
+          "Invalid txat argument: %s", argv[i]);
+      return true;
+    }
+
+    if (stringsEqualIgnoreCase(key, "route") == true) {
+      if (stringsEqualIgnoreCase(value, "transducer") == true) {
+        msg.type = MSG_TRANSMIT_TRANSDUCER;
+        have_route = true;
+      }
+      else if (stringsEqualIgnoreCase(value, "feedback") == true) {
+        msg.type = MSG_TRANSMIT_FEEDBACK;
+        have_route = true;
+      }
+      else {
+        COMM_TransmitHmiMachineLinef(HMI_TAG_ERROR, context->interface,
+            "Invalid route: %s", value);
+        return true;
+      }
+      continue;
+    }
+
+    if (stringsEqualIgnoreCase(key, "protocol") == true) {
+      if (parseProtocolValue(value, &msg.protocol) == false) {
+        COMM_TransmitHmiMachineLinef(HMI_TAG_ERROR, context->interface,
+            "Invalid protocol: %s", value);
+        return true;
+      }
+      have_protocol = true;
+      continue;
+    }
+
+    if (stringsEqualIgnoreCase(key, "payload") == true ||
+        stringsEqualIgnoreCase(key, "data") == true ||
+        stringsEqualIgnoreCase(key, "b64") == true) {
+      size_t decoded_length = 0;
+      unsigned char* decoded_data = base64_decode((const unsigned char*) value, strlen(value), &decoded_length);
+      if (decoded_data == NULL || decoded_length > PACKET_DATA_MAX_LENGTH_BYTES) {
+        free(decoded_data);
+        COMM_TransmitHmiMachineLine(HMI_TAG_ERROR,
+            "Failed to decode payload or payload exceeds maximum size", context->interface);
+        return true;
+      }
+      memcpy(msg.data, decoded_data, decoded_length);
+      msg.length_bits = decoded_length * 8U;
+      free(decoded_data);
+      have_payload = true;
+      continue;
+    }
+
+    if (stringsEqualIgnoreCase(key, "tx_cyccnt") == true) {
+      if (parseUint32Value(value, &msg.delay_cyccnt) == false) {
+        COMM_TransmitHmiMachineLinef(HMI_TAG_ERROR, context->interface,
+            "Invalid tx_cyccnt: %s", value);
+        return true;
+      }
+      have_tx_cyccnt = true;
+      continue;
+    }
+
+    if (stringsEqualIgnoreCase(key, "type") == true ||
+        stringsEqualIgnoreCase(key, "custom_type") == true) {
+      if (parseCustomTypeValue(value, &msg.data_type) == false) {
+        COMM_TransmitHmiMachineLinef(HMI_TAG_ERROR, context->interface,
+            "Invalid custom type: %s", value);
+        return true;
+      }
+      msg.preamble.message_type.value = msg.data_type;
+      msg.preamble.message_type.valid = true;
+      have_custom_type = true;
+      continue;
+    }
+
+    if (stringsEqualIgnoreCase(key, "janus_type") == true) {
+      if (parseJanusTypeValue(value, &msg.janus_data_type) == false) {
+        COMM_TransmitHmiMachineLinef(HMI_TAG_ERROR, context->interface,
+            "Invalid janus type: %s", value);
+        return true;
+      }
+      continue;
+    }
+
+    if (setPreambleOverride(&msg, key, value) == false) {
+      COMM_TransmitHmiMachineLinef(HMI_TAG_ERROR, context->interface,
+          "Unknown or invalid txat option: %s", key);
+      return true;
+    }
+  }
+
+  if (have_route == false || have_protocol == false ||
+      have_payload == false || have_tx_cyccnt == false) {
+    return false;
+  }
+
+  if (msg.protocol == PROTOCOL_CUSTOM && have_custom_type == false) {
+    COMM_TransmitHmiMachineLine(HMI_TAG_ERROR,
+        "Custom protocol transmissions require type=<custom_type>", context->interface);
+    return true;
+  }
+
+  uint32_t request_id = 0;
+  if (MAC_ScheduleHostMessage(&msg, &request_id) == false) {
+    COMM_TransmitHmiMachineLine(HMI_TAG_ERROR,
+        "Failed to schedule transmission; tx_cyccnt may be too close, in the past, beyond the safe wrap window, or another scheduled TX is already pending",
+        context->interface);
+    return true;
+  }
+
+  COMM_TransmitHmiMachineLinef(HMI_TAG_STATUS, context->interface,
+      "OK %ctxat request_id=%lu protocol=%s tx_cyccnt=%lu",
+      COMM_COMMAND_DELIMITER, (unsigned long) request_id,
+      protocolToString(msg.protocol), (unsigned long) msg.delay_cyccnt);
+  return true;
+}
+
+static bool handleCancelTxCommand(CommandContext_t* context, char* args)
+{
+  char* argv[1];
+  int argc = 0;
+  uint32_t request_id = 0;
+
+  if (parseArguments(args, argv, 1, &argc) == false || argc != 1) {
+    return false;
+  }
+
+  if (parseUint32Value(argv[0], &request_id) == false || request_id == 0) {
+    COMM_TransmitHmiMachineLinef(HMI_TAG_ERROR, context->interface,
+        "Invalid request id: %s", argv[0]);
+    return true;
+  }
+
+  if (MAC_CancelHostMessage(request_id) == false) {
+    COMM_TransmitHmiMachineLinef(HMI_TAG_ERROR, context->interface,
+        "No pending scheduled transmission with id=%lu", (unsigned long) request_id);
+    return true;
+  }
+
+  COMM_TransmitHmiMachineLinef(HMI_TAG_STATUS, context->interface,
+      "OK %ccancel_tx request_id=%lu", COMM_COMMAND_DELIMITER, (unsigned long) request_id);
+  return true;
+}
+
+static bool handleRxSubscriptionCommand(CommandContext_t* context, char* args)
+{
+  bool enabled;
+
+  if (parseOnOffArgument(args, &enabled) == false) {
+    return false;
+  }
+
+  COMM_SetHostRxSubscription(enabled, context->interface);
+  COMM_TransmitHmiMachineLinef(HMI_TAG_STATUS, context->interface,
+      "OK %crxsub %s", COMM_COMMAND_DELIMITER, enabled ? "on" : "off");
+  return true;
+}
+
+static bool handleSenseSubscriptionCommand(CommandContext_t* context, char* args)
+{
+  bool enabled;
+
+  if (parseOnOffArgument(args, &enabled) == false) {
+    return false;
+  }
+
+  COMM_SetHostSenseSubscription(enabled, context->interface);
+  COMM_TransmitHmiMachineLinef(HMI_TAG_STATUS, context->interface,
+      "OK %csense %s", COMM_COMMAND_DELIMITER, enabled ? "on" : "off");
+  return true;
+}
+
+static bool handleStatusCommand(CommandContext_t* context, char* args)
+{
+  char* argv[1];
+  int argc = 0;
+
+  if (parseArguments(args, argv, 1, &argc) == false || argc != 0) {
+    return false;
+  }
+
+  MacHostStatus_t status;
+  if (MAC_GetHostStatus(&status) == false) {
+    COMM_TransmitHmiMachineLine(HMI_TAG_ERROR,
+        "Failed to retrieve MAC status", context->interface);
+    return true;
+  }
+
+  COMM_TransmitHmiMachineLinef(HMI_TAG_STATUS, context->interface,
+      "OK %cstatus mode=%s rxsub=%s sense=%s mac_regular_tx_depth=%lu mac_emergency_tx_depth=%lu mess_tx_depth=%lu pending_scheduled_tx=%s request_id=%lu tx_cyccnt=%lu",
+      COMM_COMMAND_DELIMITER,
+      macModeToString(status.host_mode_enabled),
+      COMM_IsHostRxSubscriptionEnabled() ? "on" : "off",
+      COMM_IsHostSenseSubscriptionEnabled() ? "on" : "off",
+      (unsigned long) status.regular_tx_depth,
+      (unsigned long) status.emergency_tx_depth,
+      (unsigned long) MESS_GetTxQueueDepth(),
+      status.scheduled_tx_pending ? "yes" : "no",
+      (unsigned long) status.scheduled_tx_id,
+      (unsigned long) status.scheduled_tx_cyccnt);
+  return true;
+}
+
+static bool handleImportConfigCommand(CommandContext_t* context, char* args)
+{
+  char* argv[1];
+  int argc = 0;
+  uint8_t output_buffer[MAX_COMM_OUT_BUFFER_SIZE];
+
+  if (context == NULL) {
+    return false;
+  }
+
+  if (parseArguments(args, argv, 1, &argc) == false || argc != 1) {
+    return false;
+  }
+
+  if (ImportExport_ImportConfigurationText(argv[0], (uint16_t) strlen(argv[0]),
+                                           output_buffer, context->interface) == false) {
+    return true;
+  }
+
+  COMM_TransmitHmiMachineLinef(HMI_TAG_STATUS, context->interface,
+      "OK %cimportcfg", COMM_COMMAND_DELIMITER);
+  return true;
+}
+
+static bool handleConfigCommand(CommandContext_t* context, char* args)
+{
+  (void) args;
   COMM_TransmitHmiMachineLine(HMI_TAG_ERROR,
       "Config command not implemented yet", context->interface);
   return true;

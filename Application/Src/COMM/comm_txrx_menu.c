@@ -13,6 +13,7 @@
 #include "comm_menu_registration.h"
 #include "comm_menu_system.h"
 #include "comm_function_loops.h"
+#include "comm_main.h"
 
 #include "cfg_parameters.h"
 
@@ -316,12 +317,18 @@ void transmitFloatFb(FunctionContext_t* context)
 void rangingRequestTransducer(FunctionContext_t* context)
 {
   osEventFlagsSet(print_event_handle, MESS_REQUEST_RANGE_TRANSDUCER);
+  COMM_TransmitTaggedText(HMI_TAG_STATUS,
+      "\r\nQueued a ranging request through the transducer\r\n",
+      context->comm_interface);
   context->state->state = PARAM_STATE_COMPLETE;
 }
 
 void rangingRequestFeedback(FunctionContext_t* context)
 {
   osEventFlagsSet(print_event_handle, MESS_REQUEST_RANGE_FEEDBACK);
+  COMM_TransmitTaggedText(HMI_TAG_STATUS,
+      "\r\nQueued a ranging request through the feedback network\r\n",
+      context->comm_interface);
   context->state->state = PARAM_STATE_COMPLETE;
 }
 
@@ -337,14 +344,25 @@ void transmitBits(FunctionContext_t* context, bool is_feedback)
   do {
     switch (context->state->state) {
       case PARAM_STATE_0:
-        sprintf((char*) context->output_buffer, "\r\n\r\nPlease enter up to %u "
-            "bytes in binary data in hexademical to send to the %s with the "
-            "format 'F6 1D'...\r\n"
-            "Note: The number of bytes must be a power of 2\r\n",
-            PACKET_DATA_MAX_LENGTH_BYTES,
-            is_feedback ? "feedback network" : "transducer");
-        COMM_TransmitData(context->output_buffer, CALC_LEN, 
-            context->comm_interface);
+        if (COMM_IsTagModeEnabled() == true) {
+          COMM_TransmitHmiLinef(HMI_TAG_STATUS, context->comm_interface,
+              "Send up to %u bytes in hexadecimal to the %s with format 'F6 1D'",
+              PACKET_DATA_MAX_LENGTH_BYTES,
+              is_feedback ? "feedback network" : "transducer");
+          COMM_TransmitHmiLine(HMI_TAG_STATUS,
+              "The number of bytes must be a power of 2", context->comm_interface);
+          COMM_TransmitHmiPrompt("Enter hex payload", context->comm_interface);
+        }
+        else {
+          sprintf((char*) context->output_buffer, "\r\n\r\nPlease enter up to %u "
+              "bytes in binary data in hexademical to send to the %s with the "
+              "format 'F6 1D'...\r\n"
+              "Note: The number of bytes must be a power of 2\r\n",
+              PACKET_DATA_MAX_LENGTH_BYTES,
+              is_feedback ? "feedback network" : "transducer");
+          COMM_TransmitData(context->output_buffer, CALC_LEN,
+              context->comm_interface);
+        }
         context->state->state = PARAM_STATE_1;
         break;
       case PARAM_STATE_1:
@@ -381,20 +399,29 @@ void transmitString(FunctionContext_t* context, bool is_feedback)
   do {
     switch (context->state->state) {
       case PARAM_STATE_0:
-        sprintf((char*) context->output_buffer, "\r\n\r\nPlease enter a string to "
-            "send to the %s with a maximum length of %u characters:\r\n", 
-            is_feedback ? "feedback network" : "transducer",
-            PACKET_DATA_MAX_LENGTH_BYTES);
-        COMM_TransmitData(context->output_buffer, CALC_LEN, 
-            context->comm_interface);
+        if (COMM_IsTagModeEnabled() == true) {
+          COMM_TransmitHmiLinef(HMI_TAG_STATUS, context->comm_interface,
+              "Send a string to the %s with a maximum length of %u characters",
+              is_feedback ? "feedback network" : "transducer",
+              PACKET_DATA_MAX_LENGTH_BYTES);
+          COMM_TransmitHmiPrompt("Enter string payload", context->comm_interface);
+        }
+        else {
+          sprintf((char*) context->output_buffer, "\r\n\r\nPlease enter a string to "
+              "send to the %s with a maximum length of %u characters:\r\n",
+              is_feedback ? "feedback network" : "transducer",
+              PACKET_DATA_MAX_LENGTH_BYTES);
+          COMM_TransmitData(context->output_buffer, CALC_LEN,
+              context->comm_interface);
+        }
         context->state->state = PARAM_STATE_1;
         break;
       case PARAM_STATE_1:
         if (context->input_len > 128) {
           sprintf((char*) context->output_buffer, "\r\nInput string must be"
               "less than %u characters!\r\n", PACKET_DATA_MAX_LENGTH_BYTES);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, 
-              context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_ERROR, (char*) context->output_buffer,
+                                  context->comm_interface);
           context->state->state = PARAM_STATE_0;
         }
         else {
@@ -432,19 +459,27 @@ void transmitInt(FunctionContext_t* context, bool is_feedback)
   do {
     switch (context->state->state) {
       case PARAM_STATE_0:
-        sprintf((char*) context->output_buffer, "\r\n\r\nPlease enter an integer to "
-            "send to the %s between 0 and 4,294,967,295:\r\n", 
-            is_feedback ? "feedback network" : "transducer");
-        COMM_TransmitData(context->output_buffer, CALC_LEN, 
-            context->comm_interface);
+        if (COMM_IsTagModeEnabled() == true) {
+          COMM_TransmitHmiLinef(HMI_TAG_STATUS, context->comm_interface,
+              "Send an integer to the %s between 0 and 4294967295",
+              is_feedback ? "feedback network" : "transducer");
+          COMM_TransmitHmiPrompt("Enter integer payload", context->comm_interface);
+        }
+        else {
+          sprintf((char*) context->output_buffer, "\r\n\r\nPlease enter an integer to "
+              "send to the %s between 0 and 4,294,967,295:\r\n",
+              is_feedback ? "feedback network" : "transducer");
+          COMM_TransmitData(context->output_buffer, CALC_LEN,
+              context->comm_interface);
+        }
         context->state->state = PARAM_STATE_1;
         break;
       case PARAM_STATE_1:
         uint32_t input;
         if (checkUint32(context->input, context->input_len, &input, 0, 4294967295) == false) {
           sprintf((char*) context->output_buffer, "\r\nInvalid input!\r\n");
-          COMM_TransmitData(context->output_buffer, CALC_LEN, 
-              context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_ERROR, (char*) context->output_buffer,
+                                  context->comm_interface);
           context->state->state = PARAM_STATE_0;
         }
         else {
@@ -475,17 +510,26 @@ void transmitFloat(FunctionContext_t* context, bool is_feedback)
   do {
     switch (context->state->state) {
       case PARAM_STATE_0:
-        sprintf((char*) context->output_buffer, "\r\n\r\nPlease enter a float to "
-            "send to the %s:\r\n", 
-            is_feedback ? "feedback network" : "transducer");
-        COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+        if (COMM_IsTagModeEnabled() == true) {
+          COMM_TransmitHmiLinef(HMI_TAG_STATUS, context->comm_interface,
+              "Send a float to the %s",
+              is_feedback ? "feedback network" : "transducer");
+          COMM_TransmitHmiPrompt("Enter float payload", context->comm_interface);
+        }
+        else {
+          sprintf((char*) context->output_buffer, "\r\n\r\nPlease enter a float to "
+              "send to the %s:\r\n",
+              is_feedback ? "feedback network" : "transducer");
+          COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+        }
         context->state->state = PARAM_STATE_1;
         break;
       case PARAM_STATE_1:
         float input;
         if (checkFloat(context->input, &input, -1e30f, 1e30f) == false) {
           sprintf((char*) context->output_buffer, "\r\nInvalid input!\r\n");
-          COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_ERROR, (char*) context->output_buffer,
+                                  context->comm_interface);
           context->state->state = PARAM_STATE_0;
         }
         else {
@@ -512,8 +556,6 @@ void transmitFloat(FunctionContext_t* context, bool is_feedback)
 bool parseHexString(FunctionContext_t* context, uint16_t* num_bytes, uint8_t* decoded_bytes)
 {
   if (context == NULL || num_bytes == NULL) {
-    COMM_TransmitData("\r\nInternal Error!\r\n", CALC_LEN, 
-        context->comm_interface);
     return false;
   }
 
@@ -553,7 +595,8 @@ bool parseHexString(FunctionContext_t* context, uint16_t* num_bytes, uint8_t* de
     else if (ptr[ptr_index] >= 'A' && ptr[ptr_index] <= 'F') {
       nibble = ptr[ptr_index] - 'A' + 10;
     } else {
-      COMM_TransmitData("\r\nError: Unknown character detected\r\n", CALC_LEN,
+      COMM_TransmitTaggedText(HMI_TAG_ERROR,
+          "\r\nError: Unknown character detected\r\n",
           context->comm_interface);
       return false;
     }
@@ -579,8 +622,8 @@ bool parseHexString(FunctionContext_t* context, uint16_t* num_bytes, uint8_t* de
     sprintf((char*) context->output_buffer,"\r\nError: The input length must "
         "be a power of 2 and less than %u. The received input is %u bytes long\r\n",
         PACKET_DATA_MAX_LENGTH_BYTES, *num_bytes);
-    COMM_TransmitData(context->output_buffer, CALC_LEN, 
-        context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_ERROR, (char*) context->output_buffer,
+                            context->comm_interface);
     return false;
   }
 }
@@ -590,8 +633,9 @@ void sendMessageToTxQueue(FunctionContext_t* context, Message_t* msg, bool is_fe
   if (inCustomMode(context) == false) return;
 
   if (Param_GetUint8(PARAM_ID, (uint8_t*) &msg->preamble.modem_id.value) == false) {
-    COMM_TransmitData("\r\nError getting sender ID. Message not sent\r\n", 
-        CALC_LEN, context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_ERROR,
+        "\r\nError getting sender ID. Message not sent\r\n",
+        context->comm_interface);
     context->state->state = PARAM_STATE_COMPLETE;
     return;
   }
@@ -599,14 +643,14 @@ void sendMessageToTxQueue(FunctionContext_t* context, Message_t* msg, bool is_fe
   if (osMessageQueuePut(regular_tx_queue, msg, 0, 0) == osOK) {
     sprintf((char*) context->output_buffer, "\r\nSuccessfully added to"
         " %s queue!\r\n\r\n", is_feedback ? "feedback network" : "transducer");
-    COMM_TransmitData(context->output_buffer, CALC_LEN, 
-        context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                            context->comm_interface);
   }
   else {
     sprintf((char*) context->output_buffer, "\r\nError adding message to"
         " %s queue\r\n\r\n", is_feedback ? "feedback network" : "transducer");
-    COMM_TransmitData(context->output_buffer, CALC_LEN, 
-        context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_ERROR, (char*) context->output_buffer,
+                            context->comm_interface);
   }
   context->state->state = PARAM_STATE_COMPLETE;
 }
@@ -616,7 +660,9 @@ bool inCustomMode(FunctionContext_t* context)
   MessagingProtocol_t protocol;
   if (Param_GetUint8(PARAM_PROTOCOL, &protocol) == false) {
     context->state->state = PARAM_STATE_COMPLETE;
-    COMM_TransmitData("Cannot find protocol information. Message not sent.\r\n", CALC_LEN, context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_ERROR,
+        "Cannot find protocol information. Message not sent.\r\n",
+        context->comm_interface);
     return false;
   }
 
@@ -625,6 +671,8 @@ bool inCustomMode(FunctionContext_t* context)
   }
 
   context->state->state = PARAM_STATE_COMPLETE;
-  COMM_TransmitData("Cannot send custom messages in non-custom modes. Message not sent\r\n", CALC_LEN, context->comm_interface);
+  COMM_TransmitTaggedText(HMI_TAG_ERROR,
+      "Cannot send custom messages in non-custom modes. Message not sent\r\n",
+      context->comm_interface);
   return false;
 }

@@ -8,6 +8,35 @@ Firmware for the OpenAquatix: a JANUS compatible software defined underwater aco
 # Description
 The firmware in this repository is for the underwater acoustic modem found [here](https://github.com/ericvoi/UAM_PCB/tree/main).
 
+# Building
+This repository now supports a side-by-side CMake build in addition to the existing STM32CubeIDE project files.
+
+## Requirements
+- CMake 3.31+
+- Ninja
+- `arm-none-eabi-gcc` toolchain available on `PATH`
+
+## CMake Build
+Configure and build the debug firmware:
+
+```sh
+cmake --preset debug
+cmake --build --preset debug
+```
+
+Configure and build the release firmware:
+
+```sh
+cmake --preset release
+cmake --build --preset release
+```
+
+Build outputs are written to `build/debug` or `build/release` and include:
+- `UAM.elf`
+- `UAM.bin`
+- `UAM.list`
+- `UAM.map`
+
 # Key Features
 - 6 types of error correction (CRC-8, CRC-16, CRC-32, checksum-8, checksum-16, checksum-32)
 - FSK and FHBFSK modulation/demodulation schemes
@@ -50,11 +79,12 @@ This task facilitates the storage of all configuration parameters in flash memor
 - Update changed parameters to flash
 
 ## Medium Access Control (MAC)
-This task facilitates access to the transmission medium with either no MAC method or CSMA/CA with BEB:
-- Processes channel reports to determine the background noise level
-- Forwards received messages to the COMM task
-- Immediately forwards emergency messages
-- Sends messages to send to the MESS task if medium is available
+This task can either run local MAC logic or operate in a host-controlled mode for an attached Raspberry Pi:
+- Local modes remain available for no-MAC and CSMA/CA with BEB
+- Host-controlled mode bypasses local contention logic and lets the Pi own slotting, reservations, retries, and transmit timing decisions
+- Scheduled host transmissions are handed off to the MESS task using the existing delayed-start path
+- Channel reports can be forwarded as machine-readable sensing telemetry for Pi-side MAC logic
+- Received messages continue to flow to the COMM task for human-readable or machine-readable output
 
 ## DAC (DAC)
 This task's only purpose is to fill the DAC DMA buffers when notified by the DMA callback. Task functions:

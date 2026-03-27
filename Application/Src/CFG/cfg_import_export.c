@@ -61,7 +61,9 @@ static ParamIds_t imp_exp_parameters[] = {
 static const uint16_t num_param = sizeof(imp_exp_parameters) / sizeof(imp_exp_parameters[0]);
 
 /* Private function prototypes -----------------------------------------------*/
-
+static bool importConfigurationText(const char* input, uint16_t input_len,
+                                    uint8_t* output_buffer,
+                                    CommInterface_t interface);
 
 
 /* Exported function definitions ---------------------------------------------*/
@@ -87,6 +89,14 @@ bool ImportExport_ExportConfiguration(FunctionContext_t* context)
     buffer_index += sprintf((char*) context->output_buffer, "%hu-", id);
     // Add data (all data types)
     switch (param_type) {
+      case PARAM_TYPE_ENUM: {
+        uint8_t value;
+        if (Param_GetUint8(id, &value) == false) {
+          return false;
+        }
+        buffer_index += sprintf((char*) &context->output_buffer[buffer_index], "%hu", value);
+        break;
+      }
       case PARAM_TYPE_UINT8: {
         uint8_t value;
         if (Param_GetUint8(id, &value) == false) {
@@ -163,126 +173,11 @@ bool ImportExport_ImportConfiguration(FunctionContext_t* context)
       context->state->state = PARAM_STATE_1;
       return true;
     case PARAM_STATE_1: {
-      context->input[context->input_len] = '\0';
-      const char* start = strstr(context->input, START_SEQUENCE);
-      if (start == NULL) {
-        COMM_TransmitData("\r\nError: start sequence not found\r\n", CALC_LEN,
-            context->comm_interface);
-        context->state->state = PARAM_STATE_COMPLETE;
-        return false;
-      }
-      start += strlen(START_SEQUENCE);
-
-      const char* curr = start;
-      uint16_t params_imported = 0;
-
-      const char* end = strstr(start, END_SEQUENCE);
-      if (end == NULL) {
-        COMM_TransmitData("\r\nError: end sequence not found\r\n", CALC_LEN,
-                    context->comm_interface);
-                context->state->state = PARAM_STATE_COMPLETE;
-                return false;
-      }
-
-      while (curr < end) {
-        // skip delimiters and whitespace
-        while (curr < end && (*curr == ',' || *curr == ' ' || *curr == '\r' || *curr == '\n')) {
-          curr++;
-        }
-
-        if (curr >= end) break;
-
-        char* end_ptr;
-        ParamIds_t id = (ParamIds_t) strtoul(curr, &end_ptr, 10);
-
-        if (id >= NUM_PARAM) {
-          COMM_TransmitData("\r\nInvalid id received!\r\n", CALC_LEN, context->comm_interface);
-          context->state->state = PARAM_STATE_COMPLETE;
-          return false;
-        }
-
-        if (*end_ptr != '-') {
-          COMM_TransmitData("\r\nInvalid format!\r\n", CALC_LEN, context->comm_interface);
-          context->state->state = PARAM_STATE_COMPLETE;
-          return false;
-        }
-
-        curr = end_ptr + 1;
-
-        ParamType_t param_type;
-        if (Param_GetParamType(id, &param_type) == false) {
-          sprintf((char*) context->output_buffer, "\r\nUnknown ID: %u\r\n", id);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
-          context->state->state = PARAM_STATE_COMPLETE;
-          return false;
-        }
-
-        bool set_result = false;
-        switch (param_type) {
-          case PARAM_TYPE_UINT8: {
-            uint8_t value = (uint8_t) strtoul(curr, &end_ptr, 10);
-            set_result = Param_SetUint8(id, &value);
-            break;
-          }
-          case PARAM_TYPE_INT8: {
-            int8_t value = (int8_t) strtol(curr, &end_ptr, 10);
-            set_result = Param_SetInt8(id, &value);
-            break;
-          }
-          case PARAM_TYPE_UINT16: {
-            uint16_t value = (uint16_t) strtoul(curr, &end_ptr, 10);
-            set_result = Param_SetUint16(id, &value);
-            break;
-          }
-          case PARAM_TYPE_INT16: {
-            int16_t value = (int16_t) strtol(curr, &end_ptr, 10);
-            set_result = Param_SetInt16(id, &value);
-            break;
-          }
-          case PARAM_TYPE_UINT32: {
-            uint32_t value = (uint32_t) strtoul(curr, &end_ptr, 10);
-            set_result = Param_SetUint32(id, &value);
-            break;
-          }
-          case PARAM_TYPE_INT32: {
-            int32_t value = (int32_t) strtol(curr, &end_ptr, 10);
-            set_result = Param_SetInt32(id, &value);
-            break;
-          }
-          case PARAM_TYPE_FLOAT: {
-            float value = strtof(curr, &end_ptr);
-            set_result = Param_SetFloat(id, &value);
-            break;
-          }
-          default:
-            sprintf((char*) context->output_buffer, "\r\nUnknown parameter type for ID %u\r\n", id);
-            COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
-            context->state->state = PARAM_STATE_COMPLETE;
-            return false;
-        }
-
-        if (set_result != PARAM_SET_SUCCESS) {
-          sprintf((char*) context->output_buffer, "\r\nFailed to set parameter with ID %u\r\n", id);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
-          context->state->state = PARAM_STATE_COMPLETE;
-          return false;
-        }
-
-        curr = end_ptr;
-        params_imported++;
-      }
-      if (params_imported != num_param) {
-        sprintf((char*) context->output_buffer, "\r\nError: Imported %u parameters while %u expected\r\n", params_imported, num_param);
-        COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
-        context->state->state = PARAM_STATE_COMPLETE;
-        return false;
-      }
-
-      sprintf((char*) context->output_buffer, "\r\nSuccessfully imported %u parameters\r\n", params_imported);
-      COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
-
+      bool ret = importConfigurationText(context->input, context->input_len,
+                                         context->output_buffer,
+                                         context->comm_interface);
       context->state->state = PARAM_STATE_COMPLETE;
-      return true;
+      return ret;
     }
     default:
       context->state->state = PARAM_STATE_COMPLETE;
@@ -290,4 +185,146 @@ bool ImportExport_ImportConfiguration(FunctionContext_t* context)
   }
 }
 
+bool ImportExport_ImportConfigurationText(const char* input, uint16_t input_len,
+                                          uint8_t* output_buffer,
+                                          CommInterface_t interface)
+{
+  return importConfigurationText(input, input_len, output_buffer, interface);
+}
+
 /* Private function definitions ----------------------------------------------*/
+
+static bool importConfigurationText(const char* input, uint16_t input_len,
+                                    uint8_t* output_buffer,
+                                    CommInterface_t interface)
+{
+  char parse_buffer[MAX_COMM_IN_BUFFER_SIZE];
+
+  if (input == NULL || output_buffer == NULL || input_len >= sizeof(parse_buffer)) {
+    COMM_TransmitData("\r\nError: configuration import data is too long\r\n",
+                      CALC_LEN, interface);
+    return false;
+  }
+
+  memcpy(parse_buffer, input, input_len);
+  parse_buffer[input_len] = '\0';
+
+  const char* start = strstr(parse_buffer, START_SEQUENCE);
+  if (start == NULL) {
+    COMM_TransmitData("\r\nError: start sequence not found\r\n", CALC_LEN,
+        interface);
+    return false;
+  }
+  start += strlen(START_SEQUENCE);
+
+  const char* curr = start;
+  uint16_t params_imported = 0;
+
+  const char* end = strstr(start, END_SEQUENCE);
+  if (end == NULL) {
+    COMM_TransmitData("\r\nError: end sequence not found\r\n", CALC_LEN,
+        interface);
+    return false;
+  }
+
+  while (curr < end) {
+    while (curr < end && (*curr == ',' || *curr == ' ' ||
+           *curr == '\r' || *curr == '\n')) {
+      curr++;
+    }
+
+    if (curr >= end) break;
+
+    char* end_ptr;
+    ParamIds_t id = (ParamIds_t) strtoul(curr, &end_ptr, 10);
+
+    if (id >= NUM_PARAM) {
+      COMM_TransmitData("\r\nInvalid id received!\r\n", CALC_LEN, interface);
+      return false;
+    }
+
+    if (*end_ptr != '-') {
+      COMM_TransmitData("\r\nInvalid format!\r\n", CALC_LEN, interface);
+      return false;
+    }
+
+    curr = end_ptr + 1;
+
+    ParamType_t param_type;
+    if (Param_GetParamType(id, &param_type) == false) {
+      sprintf((char*) output_buffer, "\r\nUnknown ID: %u\r\n", id);
+      COMM_TransmitData(output_buffer, CALC_LEN, interface);
+      return false;
+    }
+
+    bool set_result = false;
+    switch (param_type) {
+      case PARAM_TYPE_ENUM: {
+        uint8_t value = (uint8_t) strtoul(curr, &end_ptr, 10);
+        set_result = Param_SetUint8(id, &value);
+        break;
+      }
+      case PARAM_TYPE_UINT8: {
+        uint8_t value = (uint8_t) strtoul(curr, &end_ptr, 10);
+        set_result = Param_SetUint8(id, &value);
+        break;
+      }
+      case PARAM_TYPE_INT8: {
+        int8_t value = (int8_t) strtol(curr, &end_ptr, 10);
+        set_result = Param_SetInt8(id, &value);
+        break;
+      }
+      case PARAM_TYPE_UINT16: {
+        uint16_t value = (uint16_t) strtoul(curr, &end_ptr, 10);
+        set_result = Param_SetUint16(id, &value);
+        break;
+      }
+      case PARAM_TYPE_INT16: {
+        int16_t value = (int16_t) strtol(curr, &end_ptr, 10);
+        set_result = Param_SetInt16(id, &value);
+        break;
+      }
+      case PARAM_TYPE_UINT32: {
+        uint32_t value = (uint32_t) strtoul(curr, &end_ptr, 10);
+        set_result = Param_SetUint32(id, &value);
+        break;
+      }
+      case PARAM_TYPE_INT32: {
+        int32_t value = (int32_t) strtol(curr, &end_ptr, 10);
+        set_result = Param_SetInt32(id, &value);
+        break;
+      }
+      case PARAM_TYPE_FLOAT: {
+        float value = strtof(curr, &end_ptr);
+        set_result = Param_SetFloat(id, &value);
+        break;
+      }
+      default:
+        sprintf((char*) output_buffer, "\r\nUnknown parameter type for ID %u\r\n", id);
+        COMM_TransmitData(output_buffer, CALC_LEN, interface);
+        return false;
+    }
+
+    if (set_result != PARAM_SET_SUCCESS) {
+      sprintf((char*) output_buffer, "\r\nFailed to set parameter with ID %u\r\n", id);
+      COMM_TransmitData(output_buffer, CALC_LEN, interface);
+      return false;
+    }
+
+    curr = end_ptr;
+    params_imported++;
+  }
+
+  if (params_imported != num_param) {
+    sprintf((char*) output_buffer,
+        "\r\nError: Imported %u parameters while %u expected\r\n",
+        params_imported, num_param);
+    COMM_TransmitData(output_buffer, CALC_LEN, interface);
+    return false;
+  }
+
+  sprintf((char*) output_buffer, "\r\nSuccessfully imported %u parameters\r\n",
+          params_imported);
+  COMM_TransmitData(output_buffer, CALC_LEN, interface);
+  return true;
+}

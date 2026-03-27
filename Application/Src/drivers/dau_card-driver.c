@@ -118,7 +118,7 @@ void DAU_ProcessRxData(uint8_t* data, uint32_t len)
         continue;
       }
 
-      if (data[i] == '\b') {
+      if (data[i] == '\b' || data[i] == 0x7f) {
         if (dau_buffer.index == 0) {
           continue;
         }
@@ -165,4 +165,3 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
     tx_busy = 0;
   }
 }
-

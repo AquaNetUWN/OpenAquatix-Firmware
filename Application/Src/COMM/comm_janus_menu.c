@@ -303,20 +303,29 @@ void transmit_011_01(FunctionContext_t* context, bool is_feedback)
   do {
     switch (context->state->state) {
       case PARAM_STATE_0:
-        sprintf((char*) context->output_buffer, "\r\n\r\nPlease enter a SMS to "
-            "send to the %s with a maximum length of %u characters:\r\n", 
-            is_feedback ? "feedback network" : "transducer",
-            PACKET_DATA_MAX_LENGTH_BYTES);
-        COMM_TransmitData(context->output_buffer, CALC_LEN, 
-            context->comm_interface);
+        if (COMM_IsTagModeEnabled() == true) {
+          COMM_TransmitHmiLinef(HMI_TAG_STATUS, context->comm_interface,
+              "Send a JANUS SMS to the %s with a maximum length of %u characters",
+              is_feedback ? "feedback network" : "transducer",
+              PACKET_DATA_MAX_LENGTH_BYTES);
+          COMM_TransmitHmiPrompt("Enter SMS payload", context->comm_interface);
+        }
+        else {
+          sprintf((char*) context->output_buffer, "\r\n\r\nPlease enter a SMS to "
+              "send to the %s with a maximum length of %u characters:\r\n",
+              is_feedback ? "feedback network" : "transducer",
+              PACKET_DATA_MAX_LENGTH_BYTES);
+          COMM_TransmitData(context->output_buffer, CALC_LEN,
+              context->comm_interface);
+        }
         context->state->state = PARAM_STATE_1;
         break;
       case PARAM_STATE_1:
         if (context->input_len > 128) {
           sprintf((char*) context->output_buffer, "\r\nInput SMS must be"
               "less than %u characters!\r\n", PACKET_DATA_MAX_LENGTH_BYTES);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, 
-              context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_ERROR, (char*) context->output_buffer,
+                                  context->comm_interface);
           context->state->state = PARAM_STATE_0;
         }
         else {
@@ -356,14 +365,14 @@ void sendMessageToTxQueue(FunctionContext_t* context, Message_t* msg, bool is_fe
   if (osMessageQueuePut(regular_tx_queue, msg, 0, 0) == true) {
     sprintf((char*) context->output_buffer, "\r\nSuccessfully added to"
         " %s queue!\r\n\r\n", is_feedback ? "feedback network" : "transducer");
-    COMM_TransmitData(context->output_buffer, CALC_LEN, 
-        context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                            context->comm_interface);
   }
   else {
     sprintf((char*) context->output_buffer, "\r\nError adding message to"
         " %s queue\r\n\r\n", is_feedback ? "feedback network" : "transducer");
-    COMM_TransmitData(context->output_buffer, CALC_LEN, 
-        context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_ERROR, (char*) context->output_buffer,
+                            context->comm_interface);
   }
   context->state->state = PARAM_STATE_COMPLETE;
 }
@@ -373,7 +382,9 @@ bool inJanusMode(FunctionContext_t* context)
   MessagingProtocol_t protocol;
   if (Param_GetUint8(PARAM_PROTOCOL, &protocol) == false) {
     context->state->state = PARAM_STATE_COMPLETE;
-    COMM_TransmitData("Cannot find protocol information. Message not sent.\r\n", CALC_LEN, context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_ERROR,
+        "Cannot find protocol information. Message not sent.\r\n",
+        context->comm_interface);
     return false;
   }
 
@@ -382,6 +393,8 @@ bool inJanusMode(FunctionContext_t* context)
   }
 
   context->state->state = PARAM_STATE_COMPLETE;
-  COMM_TransmitData("Cannot send JANUS messages in non-JANUS modes. Message not sent\r\n", CALC_LEN, context->comm_interface);
+  COMM_TransmitTaggedText(HMI_TAG_ERROR,
+      "Cannot send JANUS messages in non-JANUS modes. Message not sent\r\n",
+      context->comm_interface);
   return false;
 }

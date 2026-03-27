@@ -378,6 +378,24 @@ bool MESS_PriorityTransmission(const Message_t* msg)
   return true;
 }
 
+uint32_t MESS_GetTxQueueDepth(void)
+{
+  if (tx_queue == NULL) {
+    return 0;
+  }
+
+  return osMessageQueueGetCount(tx_queue);
+}
+
+uint32_t MESS_GetRxQueueDepth(void)
+{
+  if (rx_queue == NULL) {
+    return 0;
+  }
+
+  return osMessageQueueGetCount(rx_queue);
+}
+
 void MESS_RoundBaud(float* baud)
 {
   float length_multiple = DAC_BUFFER_SIZE / 2; // Length of sequence must be a multiple of half the DAC buffer size

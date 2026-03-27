@@ -24,6 +24,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 
 /* Private typedef -----------------------------------------------------------*/
 
@@ -80,6 +81,8 @@ static ChannelReportType_t channel_report_type = REPORT_NONE;
 static uint16_t current_counts_in_report = 0;
 static uint16_t total_counts_in_report = 0;
 static ChannelReport_t channel_report;
+static ChannelReport_t latest_channel_report;
+static bool latest_channel_report_valid = false;
 
 static uint64_t last_noise_entry_timestamp;
 
@@ -134,6 +137,9 @@ void BackgroundNoise_Reset()
   current_block.accumulated_energy = 0.0f;
   current_block.counts = 0;
   estimator_state = BG_NOISE_BOOT;
+  latest_channel_report_valid = false;
+  memset(&latest_channel_report, 0, sizeof(latest_channel_report));
+  memset(&channel_report, 0, sizeof(channel_report));
 }
 
 void BackgroundNoise_Calculate(const DspConfig_t* cfg)
@@ -310,6 +316,10 @@ void updateChannelReport()
       current_counts_in_report++;
       if (current_counts_in_report >= total_counts_in_report) {
         channel_report.psd /= current_counts_in_report;
+        channel_report.timestamp_ms = HAL_AbsoluteTimestamp();
+        channel_report.cyccnt = DWT->CYCCNT;
+        latest_channel_report = channel_report;
+        latest_channel_report_valid = true;
         current_counts_in_report = 0;
         if (osMessageQueueGetSpace(channel_report_queue) == 0) 
           REGISTER_ERROR(ERROR_QUEUE_RUNNING);
@@ -380,4 +390,14 @@ void updateChannelReportTotalCount(const DspConfig_t* cfg)
     current_counts_in_report = 0;
     total_counts_in_report = new_total_counts_in_report;
   }
+}
+
+bool BackgroundNoise_GetLatestChannelReport(ChannelReport_t* report)
+{
+  if (report == NULL || latest_channel_report_valid == false) {
+    return false;
+  }
+
+  *report = latest_channel_report;
+  return true;
 }

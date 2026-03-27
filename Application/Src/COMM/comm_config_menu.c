@@ -1465,14 +1465,16 @@ void setBaudRate(FunctionContext_t* context)
   const char* parameter_name = Param_GetName(param_id);
 
   if (parameter_name == NULL) {
-    COMM_TransmitData(uninitialized_parameter_message, CALC_LEN, context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_ERROR, uninitialized_parameter_message,
+                            context->comm_interface);
     context->state->state = PARAM_STATE_COMPLETE;
     return;
   }
 
   float min, max;
   if (Param_GetFloatLimits(param_id, &min, &max) == false) {
-    COMM_TransmitData(error_limits_message, CALC_LEN, context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_ERROR, error_limits_message,
+                            context->comm_interface);
     context->state->state = PARAM_STATE_COMPLETE;
     return;
   }
@@ -1484,31 +1486,47 @@ void setBaudRate(FunctionContext_t* context)
         if (Param_GetFloat(param_id, &current_value) == false) {
           sprintf((char*) context->output_buffer, "\r\nError obtaining current "
                   "value for %s\r\n", parameter_name);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_ERROR, (char*) context->output_buffer,
+                                  context->comm_interface);
           context->state->state = PARAM_STATE_COMPLETE;
         }
         else {
           sprintf((char*) context->output_buffer, "\r\n\r\nCurrent value of %s:"
                   " %.2f\r\n", parameter_name, current_value);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
-          sprintf((char*) context->output_buffer, "Please enter a new value from"
-                  " %.2f to %.2f:\r\n", min, max);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                                  context->comm_interface);
+          if (COMM_IsTagModeEnabled() == true) {
+            COMM_TransmitHmiPromptf(context->comm_interface,
+                "Enter new value from %.2f to %.2f", min, max);
+          }
+          else {
+            sprintf((char*) context->output_buffer, "Please enter a new value from"
+                    " %.2f to %.2f:\r\n", min, max);
+            COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+          }
           context->state->state = PARAM_STATE_1;
         }
         break;
       case PARAM_STATE_1:
         if (checkFloat(context->input, &new_baud, min, max) == true) {
           MESS_RoundBaud(&new_baud);
-          sprintf((char*) context->output_buffer, "\r\nThe closest allowable "
-                  "baud rate is %.2f. Is this ok? (y/n)\r\n", new_baud);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+          if (COMM_IsTagModeEnabled() == true) {
+            COMM_TransmitHmiPromptf(context->comm_interface,
+                "The closest allowable baud rate is %.2f. Is this ok? (y/n)",
+                new_baud);
+          }
+          else {
+            sprintf((char*) context->output_buffer, "\r\nThe closest allowable "
+                    "baud rate is %.2f. Is this ok? (y/n)\r\n", new_baud);
+            COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+          }
           context->state->state = PARAM_STATE_2;
           break;
         } else {
           sprintf((char*) context->output_buffer, "\r\nValue %.2f is outside "
                   "the range of %.2f and %.2f\r\n", new_baud, min, max);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_ERROR, (char*) context->output_buffer,
+                                  context->comm_interface);
           context->state->state = PARAM_STATE_0;
         }
         break;
@@ -1519,10 +1537,12 @@ void setBaudRate(FunctionContext_t* context)
             if (Param_SetFloat(param_id, &new_baud) == PARAM_SET_SUCCESS) {
               sprintf((char*) context->output_buffer, "\r\n%s successfully set"
               " to new value of %.2f\r\n", parameter_name, new_baud);
-              COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+              COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                                      context->comm_interface);
             }
             else {
-              COMM_TransmitData(error_updating_message, CALC_LEN, context->comm_interface);
+              COMM_TransmitTaggedText(HMI_TAG_ERROR, error_updating_message,
+                                      context->comm_interface);
             }
             context->state->state = PARAM_STATE_COMPLETE;
           }
@@ -1532,7 +1552,8 @@ void setBaudRate(FunctionContext_t* context)
         }
         else {
           sprintf((char*) context->output_buffer, "\r\nInvalid Input!\r\n");
-          COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_ERROR, (char*) context->output_buffer,
+                                  context->comm_interface);
           context->state->state = PARAM_STATE_1;
         }
         break;
@@ -1554,7 +1575,8 @@ void getBitPeriod(FunctionContext_t* context)
   MESS_GetBitPeriod(&bit_period_ms);
 
   sprintf((char*) context->output_buffer, "\r\nBit period: %.2fms\r\n", bit_period_ms);
-  COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+  COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                          context->comm_interface);
 
   context->state->state = PARAM_STATE_COMPLETE;
 }
@@ -1564,19 +1586,23 @@ void getBandwidth(FunctionContext_t* context)
   uint32_t bandwidth, lower_freq, upper_freq;
 
   if (MESS_GetBandwidth(&bandwidth, &lower_freq, &upper_freq) == false) {
-    COMM_TransmitData("\r\nInternal Error!\r\n", CALC_LEN, context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_ERROR, "\r\nInternal Error!\r\n",
+                            context->comm_interface);
     context->state->state = PARAM_STATE_COMPLETE;
     return;
   }
 
   sprintf((char*) context->output_buffer, "\r\nLower frequency: %luHz\r\n", lower_freq);
-  COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+  COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                          context->comm_interface);
 
   sprintf((char*) context->output_buffer, "Upper frequency: %luHz\r\n", upper_freq);
-  COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+  COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                          context->comm_interface);
 
   sprintf((char*) context->output_buffer, "Bandwidth: %luHz\r\n", bandwidth);
-  COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+  COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                          context->comm_interface);
 
   context->state->state = PARAM_STATE_COMPLETE;
 }
@@ -1594,7 +1620,8 @@ void setSynchronizer(FunctionContext_t* context)
 void printConfigOptions(FunctionContext_t* context)
 {
   if (ImportExport_ExportConfiguration(context) == false) {
-    COMM_TransmitData("\r\nInternal Error!\r\n", CALC_LEN, context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_ERROR, "\r\nInternal Error!\r\n",
+                            context->comm_interface);
   }
 }
 

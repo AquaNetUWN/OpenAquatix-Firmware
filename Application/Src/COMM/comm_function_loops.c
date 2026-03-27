@@ -38,10 +38,6 @@ char error_limits_message[] = "\r\nError getting the range for this parameter\r\
 char error_updating_message[] = "\r\nError updating parameter\r\n";
 char internal_error_message[] = "\r\nInternal Error when trying to get parameter\r\n";
 
-/* Private function prototypes -----------------------------------------------*/
-
-
-
 /* Exported function definitions ---------------------------------------------*/
 
 void COMMLoops_LoopUint32(FunctionContext_t* context, ParamIds_t param_id)
@@ -51,15 +47,16 @@ void COMMLoops_LoopUint32(FunctionContext_t* context, ParamIds_t param_id)
   const char* parameter_name = Param_GetName(param_id);
 
   if (parameter_name == NULL) {
-    COMM_TransmitData(uninitialized_parameter_message, sizeof(uninitialized_parameter_message) - 1, context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_ERROR, uninitialized_parameter_message,
+                            context->comm_interface);
     context->state->state = PARAM_STATE_COMPLETE;
     return;
   }
 
   uint32_t min, max;
   if (Param_GetUint32Limits(param_id, &min, &max) == false) {
-    COMM_TransmitData(error_limits_message, sizeof(error_limits_message) - 1, 
-        context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_ERROR, error_limits_message,
+                            context->comm_interface);
     context->state->state = PARAM_STATE_COMPLETE;
     return;
   }
@@ -73,19 +70,25 @@ void COMMLoops_LoopUint32(FunctionContext_t* context, ParamIds_t param_id)
         if (Param_GetUint32(param_id, &current_value) == false) {
           sprintf((char*) context->output_buffer, "\r\nError obtaining current"
               " value for %s\r\n", parameter_name);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, 
-              context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_ERROR, (char*) context->output_buffer,
+                                  context->comm_interface);
           context->state->state = PARAM_STATE_COMPLETE;
         }
         else {
           sprintf((char*) context->output_buffer, "\r\n\r\nCurrent value of %s:"
               " %lu\r\n", parameter_name, current_value);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, 
-              context->comm_interface);
-          sprintf((char*) context->output_buffer, "Please enter a new value "
-              "from %lu to %lu:\r\n", min, max);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, 
-              context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                                  context->comm_interface);
+          if (COMM_IsTagModeEnabled() == true) {
+            COMM_TransmitHmiPromptf(context->comm_interface,
+                "Enter new value from %lu to %lu", min, max);
+          }
+          else {
+            sprintf((char*) context->output_buffer, "Please enter a new value "
+                "from %lu to %lu:\r\n", min, max);
+            COMM_TransmitData(context->output_buffer, CALC_LEN,
+                context->comm_interface);
+          }
           context->state->state = PARAM_STATE_1;
         }
         break;
@@ -95,19 +98,19 @@ void COMMLoops_LoopUint32(FunctionContext_t* context, ParamIds_t param_id)
           if (Param_SetUint32(param_id, &new_value) == PARAM_SET_SUCCESS) {
             sprintf((char*) context->output_buffer, "\r\n%s successfully set "
                 "to new value of %lu\r\n", parameter_name, new_value);
-            COMM_TransmitData(context->output_buffer, CALC_LEN, 
-                context->comm_interface);
+            COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                                    context->comm_interface);
           }
           else {
-            COMM_TransmitData(error_updating_message, sizeof(error_updating_message) - 1, 
-                context->comm_interface);
+            COMM_TransmitTaggedText(HMI_TAG_ERROR, error_updating_message,
+                                    context->comm_interface);
           }
           context->state->state = PARAM_STATE_COMPLETE;
         } else {
           sprintf((char*) context->output_buffer, "\r\nValue %lu is outside the"
               " range of %lu and %lu\r\n", new_value, min, max);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, 
-              context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_ERROR, (char*) context->output_buffer,
+                                  context->comm_interface);
           context->state->state = PARAM_STATE_0;
         }
         break;
@@ -125,16 +128,16 @@ void COMMLoops_LoopUint16(FunctionContext_t* context, ParamIds_t param_id)
   const char* parameter_name = Param_GetName(param_id);
 
   if (parameter_name == NULL) {
-    COMM_TransmitData(uninitialized_parameter_message, sizeof(uninitialized_parameter_message) - 1, 
-        context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_ERROR, uninitialized_parameter_message,
+                            context->comm_interface);
     context->state->state = PARAM_STATE_COMPLETE;
     return;
   }
 
   uint16_t min, max;
   if (Param_GetUint16Limits(param_id, &min, &max) == false) {
-    COMM_TransmitData(error_limits_message, sizeof(error_limits_message) - 1, 
-        context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_ERROR, error_limits_message,
+                            context->comm_interface);
     context->state->state = PARAM_STATE_COMPLETE;
     return;
   }
@@ -148,19 +151,25 @@ void COMMLoops_LoopUint16(FunctionContext_t* context, ParamIds_t param_id)
         if (Param_GetUint16(param_id, &current_value) == false) {
           sprintf((char*) context->output_buffer, "\r\nError obtaining current"
               " value for %s\r\n", parameter_name);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, 
-              context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_ERROR, (char*) context->output_buffer,
+                                  context->comm_interface);
           context->state->state = PARAM_STATE_COMPLETE;
         }
         else {
           sprintf((char*) context->output_buffer, "\r\n\r\nCurrent value of %s:"
               " %u\r\n", parameter_name, current_value);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, 
-              context->comm_interface);
-          sprintf((char*) context->output_buffer, "Please enter a new value "
-              "from %u to %u:\r\n", min, max);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, 
-              context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                                  context->comm_interface);
+          if (COMM_IsTagModeEnabled() == true) {
+            COMM_TransmitHmiPromptf(context->comm_interface,
+                "Enter new value from %u to %u", min, max);
+          }
+          else {
+            sprintf((char*) context->output_buffer, "Please enter a new value "
+                "from %u to %u:\r\n", min, max);
+            COMM_TransmitData(context->output_buffer, CALC_LEN,
+                context->comm_interface);
+          }
           context->state->state = PARAM_STATE_1;
         }
         break;
@@ -170,19 +179,19 @@ void COMMLoops_LoopUint16(FunctionContext_t* context, ParamIds_t param_id)
           if (Param_SetUint16(param_id, &new_value) == PARAM_SET_SUCCESS) {
             sprintf((char*) context->output_buffer, "\r\n%s successfully set "
                 "to new value of %u\r\n", parameter_name, new_value);
-            COMM_TransmitData(context->output_buffer, CALC_LEN, 
-                context->comm_interface);
+            COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                                    context->comm_interface);
           }
           else {
-            COMM_TransmitData(error_updating_message, sizeof(error_updating_message) - 1, 
-                context->comm_interface);
+            COMM_TransmitTaggedText(HMI_TAG_ERROR, error_updating_message,
+                                    context->comm_interface);
           }
           context->state->state = PARAM_STATE_COMPLETE;
         } else {
           sprintf((char*) context->output_buffer, "\r\nValue %u is outside the"
           " range of %u and %u\r\n", new_value, min, max);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, 
-              context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_ERROR, (char*) context->output_buffer,
+                                  context->comm_interface);
           context->state->state = PARAM_STATE_0;
         }
         break;
@@ -200,16 +209,16 @@ void COMMLoops_LoopUint8(FunctionContext_t* context, ParamIds_t param_id)
   const char* parameter_name = Param_GetName(param_id);
 
   if (parameter_name == NULL) {
-    COMM_TransmitData(uninitialized_parameter_message, sizeof(uninitialized_parameter_message) - 1, 
-        context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_ERROR, uninitialized_parameter_message,
+                            context->comm_interface);
     context->state->state = PARAM_STATE_COMPLETE;
     return;
   }
 
   uint8_t min, max;
   if (Param_GetUint8Limits(param_id, &min, &max) == false) {
-    COMM_TransmitData(error_limits_message, sizeof(error_limits_message) - 1, 
-        context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_ERROR, error_limits_message,
+                            context->comm_interface);
     context->state->state = PARAM_STATE_COMPLETE;
     return;
   }
@@ -223,19 +232,25 @@ void COMMLoops_LoopUint8(FunctionContext_t* context, ParamIds_t param_id)
         if (Param_GetUint8(param_id, &current_value) == false) {
           sprintf((char*) context->output_buffer, "\r\nError obtaining current"
               " value for %s\r\n", parameter_name);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, 
-              context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_ERROR, (char*) context->output_buffer,
+                                  context->comm_interface);
           context->state->state = PARAM_STATE_COMPLETE;
         }
         else {
           sprintf((char*) context->output_buffer, "\r\n\r\nCurrent value of %s:"
               " %u\r\n", parameter_name, current_value);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, 
-              context->comm_interface);
-          sprintf((char*) context->output_buffer, "Please enter a new value "
-              "from %u to %u:\r\n", min, max);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, 
-              context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                                  context->comm_interface);
+          if (COMM_IsTagModeEnabled() == true) {
+            COMM_TransmitHmiPromptf(context->comm_interface,
+                "Enter new value from %u to %u", min, max);
+          }
+          else {
+            sprintf((char*) context->output_buffer, "Please enter a new value "
+                "from %u to %u:\r\n", min, max);
+            COMM_TransmitData(context->output_buffer, CALC_LEN,
+                context->comm_interface);
+          }
           context->state->state = PARAM_STATE_1;
         }
         break;
@@ -245,19 +260,19 @@ void COMMLoops_LoopUint8(FunctionContext_t* context, ParamIds_t param_id)
           if (Param_SetUint8(param_id, &new_value) == PARAM_SET_SUCCESS) {
             sprintf((char*) context->output_buffer, "\r\n%s successfully set "
                 "to new value of %u\r\n", parameter_name, new_value);
-            COMM_TransmitData(context->output_buffer, CALC_LEN, 
-                context->comm_interface);
+            COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                                    context->comm_interface);
           }
           else {
-            COMM_TransmitData(error_updating_message, sizeof(error_updating_message) - 1, 
-                context->comm_interface);
+            COMM_TransmitTaggedText(HMI_TAG_ERROR, error_updating_message,
+                                    context->comm_interface);
           }
           context->state->state = PARAM_STATE_COMPLETE;
         } else {
           sprintf((char*) context->output_buffer, "\r\nValue %u is outside the "
               "range of %u and %u\r\n", new_value, min, max);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, 
-              context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_ERROR, (char*) context->output_buffer,
+                                  context->comm_interface);
           context->state->state = PARAM_STATE_0;
         }
         break;
@@ -275,16 +290,16 @@ void COMMLoops_LoopFloat(FunctionContext_t* context, ParamIds_t param_id)
   const char* parameter_name = Param_GetName(param_id);
 
   if (parameter_name == NULL) {
-    COMM_TransmitData(uninitialized_parameter_message, sizeof(uninitialized_parameter_message) - 1, 
-        context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_ERROR, uninitialized_parameter_message,
+                            context->comm_interface);
     context->state->state = PARAM_STATE_COMPLETE;
     return;
   }
 
   float min, max;
   if (Param_GetFloatLimits(param_id, &min, &max) == false) {
-    COMM_TransmitData(error_limits_message, sizeof(error_limits_message) - 1, 
-        context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_ERROR, error_limits_message,
+                            context->comm_interface);
     context->state->state = PARAM_STATE_COMPLETE;
     return;
   }
@@ -298,19 +313,25 @@ void COMMLoops_LoopFloat(FunctionContext_t* context, ParamIds_t param_id)
         if (Param_GetFloat(param_id, &current_value) == false) {
           sprintf((char*) context->output_buffer, "\r\nError obtaining current"
               " value for %s\r\n", parameter_name);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, 
-              context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_ERROR, (char*) context->output_buffer,
+                                  context->comm_interface);
           context->state->state = PARAM_STATE_COMPLETE;
         }
         else {
           sprintf((char*) context->output_buffer, "\r\n\r\nCurrent value of %s:"
               " %.4f\r\n", parameter_name, current_value);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, 
-              context->comm_interface);
-          sprintf((char*) context->output_buffer, "Please enter a new value "
-              "from %.4f to %.4f:\r\n", min, max);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, 
-              context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                                  context->comm_interface);
+          if (COMM_IsTagModeEnabled() == true) {
+            COMM_TransmitHmiPromptf(context->comm_interface,
+                "Enter new value from %.4f to %.4f", min, max);
+          }
+          else {
+            sprintf((char*) context->output_buffer, "Please enter a new value "
+                "from %.4f to %.4f:\r\n", min, max);
+            COMM_TransmitData(context->output_buffer, CALC_LEN,
+                context->comm_interface);
+          }
           context->state->state = PARAM_STATE_1;
         }
         break;
@@ -320,18 +341,19 @@ void COMMLoops_LoopFloat(FunctionContext_t* context, ParamIds_t param_id)
           if (Param_SetFloat(param_id, &new_value) == PARAM_SET_SUCCESS) {
             sprintf((char*) context->output_buffer, "\r\n%s successfully set to"
                 " new value of %.4f\r\n", parameter_name, new_value);
-            COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+            COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                                    context->comm_interface);
           }
           else {
-            COMM_TransmitData(error_updating_message, sizeof(error_updating_message) - 1, 
-                context->comm_interface);
+            COMM_TransmitTaggedText(HMI_TAG_ERROR, error_updating_message,
+                                    context->comm_interface);
           }
           context->state->state = PARAM_STATE_COMPLETE;
         } else {
           sprintf((char*) context->output_buffer, "\r\nValue %.4f is outside "
               "the range of %.4f and %.4f\r\n", new_value, min, max);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, 
-              context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_ERROR, (char*) context->output_buffer,
+                                  context->comm_interface);
           context->state->state = PARAM_STATE_0;
         }
         break;
@@ -349,16 +371,16 @@ void COMMLoops_LoopEnum(FunctionContext_t* context, ParamIds_t param_id)
   const char* parameter_name = Param_GetName(param_id);
 
   if (parameter_name == NULL) {
-    COMM_TransmitData(uninitialized_parameter_message, sizeof(uninitialized_parameter_message) - 1, 
-        context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_ERROR, uninitialized_parameter_message,
+                            context->comm_interface);
     context->state->state = PARAM_STATE_COMPLETE;
     return;
   }
 
   uint8_t min, max;
   if (Param_GetEnumLimits(param_id, &min, &max) == false) {
-    COMM_TransmitData(error_limits_message, sizeof(error_limits_message) - 1, 
-        context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_ERROR, error_limits_message,
+                            context->comm_interface);
     context->state->state = PARAM_STATE_COMPLETE;
     return;
   }
@@ -374,27 +396,33 @@ void COMMLoops_LoopEnum(FunctionContext_t* context, ParamIds_t param_id)
         if (Param_GetEnum(param_id, &current_value) == false) {
           sprintf((char*) context->output_buffer, "\r\nError obtaining current"
               " value for %s\r\n", parameter_name);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, 
-              context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_ERROR, (char*) context->output_buffer,
+                                  context->comm_interface);
           context->state->state = PARAM_STATE_COMPLETE;
         }
         else {
           sprintf((char*) context->output_buffer, "\r\n\r\nCurrent value of %s"
               " is %u: %s\r\n", parameter_name, current_value, 
               descriptors[current_value]);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, 
-              context->comm_interface);
-          sprintf((char*) context->output_buffer, "Please enter a new value "
-              "from %u to %u:\r\n", min, max);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, 
-              context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                                  context->comm_interface);
+          if (COMM_IsTagModeEnabled() == true) {
+            COMM_TransmitHmiPromptf(context->comm_interface,
+                "Enter new value from %u to %u", min, max);
+          }
+          else {
+            sprintf((char*) context->output_buffer, "Please enter a new value "
+                "from %u to %u:\r\n", min, max);
+            COMM_TransmitData(context->output_buffer, CALC_LEN,
+                context->comm_interface);
+          }
           for (uint8_t i = 0; i <= max; i++) {
             uint16_t buffer_index = 0;
             buffer_index += sprintf((char*) context->output_buffer, "%u: ", i);
             sprintf((char*) &context->output_buffer[buffer_index], "%s\r\n", 
                 descriptors[i]);
-            COMM_TransmitData(context->output_buffer, CALC_LEN, 
-                context->comm_interface);
+            COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                                    context->comm_interface);
           }
           context->state->state = PARAM_STATE_1;
         }
@@ -406,19 +434,19 @@ void COMMLoops_LoopEnum(FunctionContext_t* context, ParamIds_t param_id)
             sprintf((char*) context->output_buffer, "\r\n%s successfully set "
                 "to new value of %u: %s\r\n", parameter_name, new_value, 
                 descriptors[new_value]);
-            COMM_TransmitData(context->output_buffer, CALC_LEN, 
-                context->comm_interface);
+            COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                                    context->comm_interface);
           }
           else {
-            COMM_TransmitData(error_updating_message, sizeof(error_updating_message) - 1, 
-                context->comm_interface);
+            COMM_TransmitTaggedText(HMI_TAG_ERROR, error_updating_message,
+                                    context->comm_interface);
           }
           context->state->state = PARAM_STATE_COMPLETE;
         } else {
           sprintf((char*) context->output_buffer, "\r\nValue %u is outside the "
               "range of %u and %u\r\n", new_value, min, max);
-          COMM_TransmitData(context->output_buffer, CALC_LEN, 
-              context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_ERROR, (char*) context->output_buffer,
+                                  context->comm_interface);
           context->state->state = PARAM_STATE_0;
         }
         break;
@@ -438,8 +466,8 @@ void COMMLoops_LoopToggle(FunctionContext_t* context, ParamIds_t param_id)
   const char* parameter_name = Param_GetName(param_id);
 
   if (parameter_name == NULL) {
-    COMM_TransmitData(uninitialized_parameter_message, sizeof(uninitialized_parameter_message) - 1, 
-        context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_ERROR, uninitialized_parameter_message,
+                            context->comm_interface);
     context->state->state = PARAM_STATE_COMPLETE;
     return;
   }
@@ -452,17 +480,25 @@ void COMMLoops_LoopToggle(FunctionContext_t* context, ParamIds_t param_id)
         if (Param_GetUint8(param_id, (uint8_t*) &current_state) == false) {
           sprintf((char*) context->output_buffer, "\r\nError obtaining current "
               "state\r\n");
-          COMM_TransmitData(context->output_buffer, CALC_LEN, 
-              context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_ERROR, (char*) context->output_buffer,
+                                  context->comm_interface);
           context->state->state = PARAM_STATE_COMPLETE;
         }
         else {
-          sprintf((char*) context->output_buffer, "\r\n%s is currently %s. "
-              "Would you like to %s it? (y/n):\r\n", parameter_name, 
-              current_state ? "enabled" : "disabled", 
-              current_state ? "disable" : "enable");
-          COMM_TransmitData(context->output_buffer, CALC_LEN, 
-            context->comm_interface);
+          if (COMM_IsTagModeEnabled() == true) {
+            COMM_TransmitHmiPromptf(context->comm_interface,
+                "%s is currently %s. Would you like to %s it? (y/n)",
+                parameter_name, current_state ? "enabled" : "disabled",
+                current_state ? "disable" : "enable");
+          }
+          else {
+            sprintf((char*) context->output_buffer, "\r\n%s is currently %s. "
+                "Would you like to %s it? (y/n):\r\n", parameter_name,
+                current_state ? "enabled" : "disabled",
+                current_state ? "disable" : "enable");
+            COMM_TransmitData(context->output_buffer, CALC_LEN,
+              context->comm_interface);
+          }
           context->state->state = PARAM_STATE_1;
         }
         break;
@@ -474,12 +510,12 @@ void COMMLoops_LoopToggle(FunctionContext_t* context, ParamIds_t param_id)
             if (Param_SetUint8(param_id, (uint8_t*) &new_value) == PARAM_SET_SUCCESS) {
               sprintf((char*) context->output_buffer, "\r\nSuccessfully %s %s\r\n",
                  new_value ? "enabled" : "disabled", parameter_name);
-              COMM_TransmitData(context->output_buffer, CALC_LEN, 
-                  context->comm_interface);
+              COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                                      context->comm_interface);
             }
             else {
-              COMM_TransmitData(error_updating_message, sizeof(error_updating_message) - 1, 
-                  context->comm_interface);
+              COMM_TransmitTaggedText(HMI_TAG_ERROR, error_updating_message,
+                                      context->comm_interface);
             }
             context->state->state = PARAM_STATE_COMPLETE;
           }
@@ -489,8 +525,8 @@ void COMMLoops_LoopToggle(FunctionContext_t* context, ParamIds_t param_id)
         }
         else {
           sprintf((char*) context->output_buffer, "\r\nInvalid Input!\r\n");
-          COMM_TransmitData(context->output_buffer, CALC_LEN, 
-              context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_ERROR, (char*) context->output_buffer,
+                                  context->comm_interface);
           context->state->state = PARAM_STATE_0;
         }
         break;
@@ -503,10 +539,9 @@ void COMMLoops_LoopToggle(FunctionContext_t* context, ParamIds_t param_id)
 
 void COMMLoops_NotImplemented(FunctionContext_t* context)
 {
-  COMM_TransmitData("\r\nThis function/parameter has not been implemented yet!\r\n",
-                    CALC_LEN, context->comm_interface);
+  COMM_TransmitTaggedText(HMI_TAG_ERROR,
+      "\r\nThis function/parameter has not been implemented yet!\r\n",
+      context->comm_interface);
 
   context->state->state = PARAM_STATE_COMPLETE;
 }
-
-/* Private function definitions ----------------------------------------------*/

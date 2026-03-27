@@ -303,14 +303,20 @@ static void setLedColourHandler(FunctionContext_t* context)
   do {
     switch (context->state->state) {
       case PARAM_STATE_0: // Prompt for red
-        sprintf((char*) context->output_buffer, "\r\n\r\nPlease enter a red value from 0-255\r\nRed: ");
-        COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+        if (COMM_IsTagModeEnabled() == true) {
+          COMM_TransmitHmiPrompt("Enter red value from 0 to 255", context->comm_interface);
+        }
+        else {
+          sprintf((char*) context->output_buffer, "\r\n\r\nPlease enter a red value from 0-255\r\nRed: ");
+          COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+        }
         context->state->state = PARAM_STATE_1;
         break;
       case PARAM_STATE_1: // check red input
         if (checkUint8(context->input, context->input_len, &red, 0, 255) == false) {
           sprintf((char*) context->output_buffer, "\r\nInvalid Input: Value must be a valid integer between 0-255");
-          COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_ERROR, (char*) context->output_buffer,
+                                  context->comm_interface);
           context->state->state = PARAM_STATE_0;
           break;
         } else {
@@ -318,14 +324,20 @@ static void setLedColourHandler(FunctionContext_t* context)
         }
         // fall through
       case PARAM_STATE_2: // Prompt for green
-        sprintf((char*) context->output_buffer, "\r\n\r\nPlease enter a green value from 0-255\r\nGreen: ");
-        COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+        if (COMM_IsTagModeEnabled() == true) {
+          COMM_TransmitHmiPrompt("Enter green value from 0 to 255", context->comm_interface);
+        }
+        else {
+          sprintf((char*) context->output_buffer, "\r\n\r\nPlease enter a green value from 0-255\r\nGreen: ");
+          COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+        }
         context->state->state = PARAM_STATE_3;
         break;
       case PARAM_STATE_3: // check green
         if (! checkUint8(context->input, context->input_len, &green, 0, 255)) {
           sprintf((char*) context->output_buffer, "\r\nInvalid Input: Value must be a valid integer between 0-255");
-          COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_ERROR, (char*) context->output_buffer,
+                                  context->comm_interface);
           context->state->state = PARAM_STATE_2;
           break;
         } else {
@@ -333,14 +345,20 @@ static void setLedColourHandler(FunctionContext_t* context)
         }
         // fall through
       case PARAM_STATE_4: // prompt blue
-        sprintf((char*) context->output_buffer, "\r\n\r\nPlease enter a blue value from 0-255\r\nBlue: ");
-        COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+        if (COMM_IsTagModeEnabled() == true) {
+          COMM_TransmitHmiPrompt("Enter blue value from 0 to 255", context->comm_interface);
+        }
+        else {
+          sprintf((char*) context->output_buffer, "\r\n\r\nPlease enter a blue value from 0-255\r\nBlue: ");
+          COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+        }
         context->state->state = PARAM_STATE_5;
         break;
       case PARAM_STATE_5: // check blue
         if (! checkUint8(context->input, context->input_len, &blue, 0, 255)) {
           sprintf((char*) context->output_buffer, "\r\nInvalid Input: Value must be a valid integer between 0-255");
-          COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_ERROR, (char*) context->output_buffer,
+                                  context->comm_interface);
           context->state->state = PARAM_STATE_4;
         } else {
           // Received 3 valid rgb values so now set LED colour
@@ -365,8 +383,9 @@ static void printWaveformHandler(FunctionContext_t* context)
 
   osEventFlagsSet(print_event_handle, MESS_PRINT_WAVEFORM);
 
-  COMM_TransmitData("\r\nThe next waveform will be printed. This function should "
-                    "only be used with a script.", CALC_LEN, COMM_USB);
+  COMM_TransmitTaggedText(HMI_TAG_STATUS,
+      "\r\nThe next waveform will be printed. This function should only be used with a script.\r\n",
+      COMM_USB);
 
   context->state->state = PARAM_STATE_COMPLETE;
 }
@@ -418,7 +437,8 @@ static void printCurrentTemp(FunctionContext_t* context)
 
   sprintf((char*) context->output_buffer, "\r\nCurrent temperature: %.2f C\r\n",
           temp);
-  COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+  COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                          context->comm_interface);
   context->state->state = PARAM_STATE_COMPLETE;
 }
 
@@ -434,14 +454,17 @@ static void printCurrentPowerConsumption(FunctionContext_t* context)
 
   sprintf((char*) context->output_buffer, "\r\nLatest power reading: %.3f W\r\n",
           power);
-  COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+  COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                          context->comm_interface);
   context->state->state = PARAM_STATE_COMPLETE;
 }
 
 static void printBackgroundNoise(FunctionContext_t* context)
 {
   if (BackgroundNoise_Ready() == false) {
-    COMM_TransmitData("\r\nBackground noise not available yet\r\n", CALC_LEN, context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_ERROR,
+        "\r\nBackground noise not available yet\r\n",
+        context->comm_interface);
     context->state->state = PARAM_STATE_COMPLETE;
     return;
   }
@@ -449,7 +472,8 @@ static void printBackgroundNoise(FunctionContext_t* context)
   float background_noise = BackgroundNoise_GetNsd();
 
   sprintf((char*) context->output_buffer, "\r\nBackground noise: %.0f nV/sqrt(Hz)\r\n", background_noise);
-  COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+  COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                          context->comm_interface);
   context->state->state = PARAM_STATE_COMPLETE;
 }
 
@@ -460,24 +484,36 @@ static void resetSavedValues(FunctionContext_t* context)
   do {
     switch (context->state->state) {
       case PARAM_STATE_0:
-        COMM_TransmitData("\r\nThis will reset the device. Are you sure? (y/n)\r\n", CALC_LEN, context->comm_interface);
+        if (COMM_IsTagModeEnabled() == true) {
+          COMM_TransmitHmiPrompt("This will reset the device. Are you sure? (y/n)",
+                                 context->comm_interface);
+        }
+        else {
+          COMM_TransmitData("\r\nThis will reset the device. Are you sure? (y/n)\r\n",
+                            CALC_LEN, context->comm_interface);
+        }
         context->state->state = PARAM_STATE_1;
         break;
       case PARAM_STATE_1:
         bool affirm;
         if (checkYesNo(*context->input, &affirm) == false) {
-          COMM_TransmitData("\r\nInvalid input!\r\n", CALC_LEN, context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_ERROR, "\r\nInvalid input!\r\n",
+                                  context->comm_interface);
           context->state->state = PARAM_STATE_0;
           break;
         }
         if (affirm == true) {
-          COMM_TransmitData("\r\nResetting flash sector...", CALC_LEN, context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_STATUS, "\r\nResetting flash sector...\r\n",
+                                  context->comm_interface);
           if (Param_FlashReset() == false) {
-            COMM_TransmitData("\r\nError encountered. Aborting...", CALC_LEN, context->comm_interface);
+            COMM_TransmitTaggedText(HMI_TAG_ERROR,
+                "\r\nError encountered. Aborting...\r\n",
+                context->comm_interface);
             context->state->state = PARAM_STATE_COMPLETE;
             break;
           }
-          COMM_TransmitData("\r\nResetting device...\r\n", CALC_LEN, context->comm_interface);
+          COMM_TransmitTaggedText(HMI_TAG_STATUS, "\r\nResetting device...\r\n",
+                                  context->comm_interface);
 
           // Give time to print USB message (not needed in practice)
           osDelay(10);
@@ -501,7 +537,9 @@ static void enterDfuMode(FunctionContext_t* context)
   HAL_PWR_EnableBkUpAccess();
 
   if (HAL_PWREx_EnableBkUpReg() != HAL_OK) {
-    COMM_TransmitData("Could not set backup flag. Aborted action\r\n", CALC_LEN, context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_ERROR,
+        "Could not set backup flag. Aborted action\r\n",
+        context->comm_interface);
     context->state->state = PARAM_STATE_COMPLETE;
     return;
   }
@@ -510,7 +548,9 @@ static void enterDfuMode(FunctionContext_t* context)
   volatile uint32_t check_value = *((uint32_t*) 0x38800000);
 
   if (check_value != MAGIC_RESET_NUMBER) {
-    COMM_TransmitData("Error setting DFU flag. Aborting action\r\n", CALC_LEN, context->comm_interface);
+    COMM_TransmitTaggedText(HMI_TAG_ERROR,
+        "Error setting DFU flag. Aborting action\r\n",
+        context->comm_interface);
     context->state->state = PARAM_STATE_COMPLETE;
     return;
   }

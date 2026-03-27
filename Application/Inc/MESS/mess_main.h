@@ -268,6 +268,20 @@ bool MESS_AddMessageToRxQ(const Message_t* msg);
 bool MESS_PriorityTransmission(const Message_t* msg);
 
 /**
+ * @brief Returns the number of queued outbound messages awaiting MESS processing
+ *
+ * @return uint32_t Current tx queue depth
+ */
+uint32_t MESS_GetTxQueueDepth(void);
+
+/**
+ * @brief Returns the number of queued inbound messages awaiting COMM processing
+ *
+ * @return uint32_t Current rx queue depth
+ */
+uint32_t MESS_GetRxQueueDepth(void);
+
+/**
  * @brief Adjust baud rate to conform to hardware constraints
  *
  * Rounds the baud rate to ensure it aligns with DAC buffer size requirements.

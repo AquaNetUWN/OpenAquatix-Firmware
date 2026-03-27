@@ -18,6 +18,7 @@ extern "C" {
 /* Includes ------------------------------------------------------------------*/
 
 #include "mess_dsp_config.h"
+#include "mac_channel_reports.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -77,6 +78,15 @@ float BackgroundNoise_GetNsd();
  * @return true if ready, false otherwise
  */
 bool BackgroundNoise_Ready();
+
+/**
+ * @brief Returns the most recent completed channel report
+ *
+ * @param report Destination for the latest completed report
+ *
+ * @return true when a completed report has been produced, false otherwise
+ */
+bool BackgroundNoise_GetLatestChannelReport(ChannelReport_t* report);
 
 /* Private defines -----------------------------------------------------------*/
 

@@ -13,6 +13,7 @@
 #include "comm_menu_registration.h"
 #include "comm_menu_system.h"
 #include "comm_function_loops.h"
+#include "comm_main.h"
 #include "sys_temperature.h"
 #include "sys_power.h"
 #include "error_manager.h"
@@ -284,7 +285,8 @@ static void printPeakPwr(FunctionContext_t* context)
 
   sprintf((char*) context->output_buffer, "\r\nMax power reading: %.3f W\r\n",
           power);
-  COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+  COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                          context->comm_interface);
   context->state->state = PARAM_STATE_COMPLETE;
 }
 
@@ -296,7 +298,8 @@ static void printPwrSinceBoot(FunctionContext_t* context)
   sprintf((char*) context->output_buffer, "\r\nAverage power reading: %.3f W\r\n"
           "Energy since boot: %.0f J\r\n",
           power, energy);
-  COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+  COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                          context->comm_interface);
   context->state->state = PARAM_STATE_COMPLETE;
 }
 
@@ -306,7 +309,8 @@ static void printAvgPwr(FunctionContext_t* context)
 
   sprintf((char*) context->output_buffer, "\r\nAverage power reading: %.3f W\r\n",
           power);
-  COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+  COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                          context->comm_interface);
   context->state->state = PARAM_STATE_COMPLETE;
 }
 
@@ -316,7 +320,8 @@ static void printCurrPwr(FunctionContext_t* context)
 
   sprintf((char*) context->output_buffer, "\r\nLatest power reading: %.3f W\r\n",
           power);
-  COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+  COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                          context->comm_interface);
   context->state->state = PARAM_STATE_COMPLETE;
 }
 
@@ -326,7 +331,8 @@ static void printCurrTemp(FunctionContext_t* context)
 
   sprintf((char*) context->output_buffer, "\r\nCurrent temperature: %.2f C\r\n",
           temp);
-  COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+  COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                          context->comm_interface);
   context->state->state = PARAM_STATE_COMPLETE;
 }
 
@@ -336,7 +342,8 @@ static void printPeakTemp(FunctionContext_t* context)
 
   sprintf((char*) context->output_buffer, "\r\nPeak temperature: %.2f C\r\n",
           temp);
-  COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+  COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                          context->comm_interface);
   context->state->state = PARAM_STATE_COMPLETE;
 }
 
@@ -346,6 +353,7 @@ static void printAvgTemp(FunctionContext_t* context)
 
   sprintf((char*) context->output_buffer, "\r\nAverage temperature: %.2f C\r\n",
           temp);
-  COMM_TransmitData(context->output_buffer, CALC_LEN, context->comm_interface);
+  COMM_TransmitTaggedText(HMI_TAG_STATUS, (char*) context->output_buffer,
+                          context->comm_interface);
   context->state->state = PARAM_STATE_COMPLETE;
 }

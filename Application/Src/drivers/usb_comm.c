@@ -99,7 +99,7 @@ void USB_ProcessRxData(uint8_t* data, uint32_t len)
         continue;
       }
 
-      if (data[i] == '\b') {
+      if (data[i] == '\b' || data[i] == 0x7f) {
         if (usb_buffer.index == 0) {
           usb_buffer.contents_changed = false;
           continue;

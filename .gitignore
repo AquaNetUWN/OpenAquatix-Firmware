@@ -5,6 +5,10 @@ Release/
 .launches/
 .vscode/
 
+# CMake / Ninja
+build/
+CMakeUserPresets.json
+
 # STM32CubeIDE metadata
 .metadata/
 

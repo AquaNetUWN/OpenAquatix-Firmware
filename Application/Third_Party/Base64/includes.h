@@ -35,16 +35,16 @@
 #endif /* _MSC_VER */
 #endif /* CONFIG_TI_COMPILER */
 
-#ifndef CONFIG_NATIVE_WINDOWS
-#ifndef CONFIG_TI_COMPILER
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#ifndef __vxworks
-#include <sys/uio.h>
-#include <sys/time.h>
-#endif /* __vxworks */
-#endif /* CONFIG_TI_COMPILER */
-#endif /* CONFIG_NATIVE_WINDOWS */
+//#ifndef CONFIG_NATIVE_WINDOWS
+//#ifndef CONFIG_TI_COMPILER
+//#include <sys/socket.h>
+//#include <netinet/in.h>
+//#include <arpa/inet.h>
+//#ifndef __vxworks
+//#include <sys/uio.h>
+//#include <sys/time.h>
+//#endif /* __vxworks */
+//#endif /* CONFIG_TI_COMPILER */
+//#endif /* CONFIG_NATIVE_WINDOWS */
 
 #endif /* INCLUDES_H */

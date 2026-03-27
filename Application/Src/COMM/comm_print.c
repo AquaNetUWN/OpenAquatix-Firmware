@@ -47,6 +47,8 @@ static void printCustomData(Message_t* msg, uint8_t* out_buffer, CommInterface_t
 static void printJanusHeader(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface);
 static void printJanusData(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface);
 static void printJanusHeaderParameter(PreambleValue_t parameter, uint8_t* out_buffer, CommInterface_t interface);
+static void printJanusTaggedParameter(const char* label, PreambleValue_t parameter,
+                                      uint8_t* out_buffer, CommInterface_t interface);
 
 static void printSenderId(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface);
 static void printDestinationId(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface);
@@ -58,6 +60,7 @@ static void printBitsData(Message_t* msg, uint8_t* out_buffer, CommInterface_t i
 static void printInteger(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface);
 static void printFloat(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface);
 static void printEvalMessage(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface);
+static void copyPrintableString(Message_t* msg, uint8_t* out_buffer, uint16_t buffer_len);
 
 /* Exported function definitions ---------------------------------------------*/
 
@@ -68,6 +71,29 @@ void Print_DisplayReceivedMessage(Message_t* msg, uint8_t* out_buffer, CommInter
   }
 
   if (cargo_error_behavior == CARGO_ERROR_DROP && msg->error_detected == true) {
+    return;
+  }
+
+  if (COMM_IsTagModeEnabled() == true) {
+    COMM_TransmitHmiLinef(HMI_TAG_MSG_RX, interface, "Received a new message at %ds",
+        (int) msg->timestamp / 1000);
+
+    if (cargo_error_behavior == CARGO_ERROR_NOTIFY && msg->error_detected == true) {
+      COMM_TransmitHmiLine(HMI_TAG_MSG_RX, "Message cargo contained errors", interface);
+    }
+
+    switch (msg->protocol) {
+      case PROTOCOL_CUSTOM:
+        printCustomHeader(msg, out_buffer, interface);
+        printCustomData(msg, out_buffer, interface);
+        break;
+      case PROTOCOL_JANUS:
+        printJanusHeader(msg, out_buffer, interface);
+        printJanusData(msg, out_buffer, interface);
+        break;
+      default:
+        COMM_TransmitHmiLine(HMI_TAG_ERROR, "Internal error when printing message", interface);
+    }
     return;
   }
 
@@ -115,8 +141,23 @@ void Print_RegisterParams(void)
 
 /* Private function definitions ----------------------------------------------*/
 
-void printCustomHeader(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface)
+static void printCustomHeader(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface)
 {
+  if (COMM_IsTagModeEnabled() == true) {
+    COMM_TransmitHmiLinef(HMI_TAG_MSG_RX, interface, "Errors Present: %s",
+        msg->error_detected ? "Yes" : "No");
+    COMM_TransmitHmiLinef(HMI_TAG_MSG_RX, interface, "Sender id: %u",
+        msg->preamble.modem_id.value);
+    COMM_TransmitHmiLinef(HMI_TAG_MSG_RX, interface, "Message Length (bits): %u",
+        msg->length_bits);
+    COMM_TransmitHmiLinef(HMI_TAG_MSG_RX, interface, "Mobile sender: %s",
+        msg->preamble.is_mobile.value ? "Yes" : "No");
+    COMM_TransmitHmiLinef(HMI_TAG_MSG_RX, interface, "SNR: %.2f", msg->snr);
+    COMM_TransmitHmiLinef(HMI_TAG_MSG_RX, interface, "Relative speed: %.3f m/s",
+        msg->doppler_mps);
+    return;
+  }
+
   sprintf((char*) out_buffer, "Errors Present: %s\r\n", msg->error_detected ? "Yes" : "No");
   COMM_TransmitData(out_buffer, CALC_LEN, interface);
 
@@ -136,8 +177,39 @@ void printCustomHeader(Message_t* msg, uint8_t* out_buffer, CommInterface_t inte
   COMM_TransmitData(out_buffer, CALC_LEN, interface);
 }
 
-void printCustomData(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface)
+static void printCustomData(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface)
 {
+  if (COMM_IsTagModeEnabled() == true) {
+    switch (msg->preamble.message_type.value) {
+      case STRING:
+        copyPrintableString(msg, out_buffer, MAX_COMM_OUT_BUFFER_SIZE);
+        COMM_TransmitHmiLinef(HMI_TAG_MSG_RX, interface, "String: %s", out_buffer);
+        break;
+      case BITS:
+        printBitsData(msg, out_buffer, interface);
+        break;
+      case INTEGER:
+        printInteger(msg, out_buffer, interface);
+        break;
+      case FLOAT:
+        printFloat(msg, out_buffer, interface);
+        break;
+      case EVAL:
+        printEvalMessage(msg, out_buffer, interface);
+        break;
+      case RANGING_REQUEST:
+        COMM_TransmitHmiLine(HMI_TAG_MSG_RX, "Ranging request received", interface);
+        break;
+      case RANGING_RESPONSE:
+        COMM_TransmitHmiLinef(HMI_TAG_MSG_RX, interface, "Range: %.2fm", msg->range_m);
+        break;
+      default:
+        COMM_TransmitHmiLine(HMI_TAG_MSG_RX, "Unknown data type: N/A", interface);
+        break;
+    }
+    return;
+  }
+
   switch (msg->preamble.message_type.value) {
     case STRING:
       sprintf((char*) out_buffer, "String: ");
@@ -162,6 +234,9 @@ void printCustomData(Message_t* msg, uint8_t* out_buffer, CommInterface_t interf
     case EVAL:
       printEvalMessage(msg, out_buffer, interface);
       return;
+    case RANGING_REQUEST:
+      COMM_TransmitData("Ranging request received\r\n", CALC_LEN, interface);
+      break;
     case RANGING_RESPONSE:
       sprintf((char*) out_buffer, "Range: %.2fm\r\n", msg->range_m);
       COMM_TransmitData(out_buffer, CALC_LEN, interface);
@@ -172,8 +247,34 @@ void printCustomData(Message_t* msg, uint8_t* out_buffer, CommInterface_t interf
   }
 }
 
-void printJanusHeader(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface)
+static void printJanusHeader(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface)
 {
+  if (COMM_IsTagModeEnabled() == true) {
+    printJanusTaggedParameter("Mobility flag", msg->preamble.is_mobile, out_buffer, interface);
+    printJanusTaggedParameter("Schedule flag", msg->preamble.schedule_flag, out_buffer, interface);
+    printJanusTaggedParameter("Tx/Rx flag", msg->preamble.tx_rx_capable, out_buffer, interface);
+    printJanusTaggedParameter("Forwarding capability", msg->preamble.can_forward, out_buffer, interface);
+    printJanusTaggedParameter("Class user i.d.", msg->preamble.class_user_id, out_buffer, interface);
+    printJanusTaggedParameter("Application type", msg->preamble.application_type, out_buffer, interface);
+    COMM_TransmitHmiLinef(HMI_TAG_MSG_RX, interface, "SNR: %.2f", msg->snr);
+    COMM_TransmitHmiLinef(HMI_TAG_MSG_RX, interface, "Relative speed: %.3f m/s",
+        msg->doppler_mps);
+    COMM_TransmitHmiLinef(HMI_TAG_MSG_RX, interface, "Message length (bits): %u",
+        msg->length_bits);
+
+    switch (msg->janus_data_type) {
+      case JANUS_011_01_SMS:
+        printJanusTaggedParameter("Sender i.d.", msg->preamble.modem_id, out_buffer, interface);
+        printJanusTaggedParameter("Destination i.d.", msg->preamble.destination_id, out_buffer, interface);
+        printJanusTaggedParameter("Coding", msg->preamble.coding, out_buffer, interface);
+        printJanusTaggedParameter("Encryption", msg->preamble.encryption, out_buffer, interface);
+        break;
+      default:
+        COMM_TransmitHmiLine(HMI_TAG_MSG_RX, "Unknown JANUS message!", interface);
+    }
+    return;
+  }
+
   COMM_TransmitData("Mobility flag: ", CALC_LEN, interface);
   printJanusHeaderParameter(msg->preamble.is_mobile, out_buffer, interface);
 
@@ -214,8 +315,20 @@ void printJanusHeader(Message_t* msg, uint8_t* out_buffer, CommInterface_t inter
   }
 }
 
-void printJanusData(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface)
+static void printJanusData(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface)
 {
+  if (COMM_IsTagModeEnabled() == true) {
+    switch (msg->janus_data_type) {
+      case JANUS_011_01_SMS:
+        copyPrintableString(msg, out_buffer, MAX_COMM_OUT_BUFFER_SIZE);
+        COMM_TransmitHmiLinef(HMI_TAG_MSG_RX, interface, "SMS: %s", out_buffer);
+        break;
+      default:
+        break;
+    }
+    return;
+  }
+
   switch (msg->janus_data_type) {
     case JANUS_011_01_SMS:
       COMM_TransmitData("SMS: ", CALC_LEN, interface);
@@ -225,7 +338,7 @@ void printJanusData(Message_t* msg, uint8_t* out_buffer, CommInterface_t interfa
   }
 }
 
-void printJanusHeaderParameter(PreambleValue_t parameter, uint8_t* out_buffer, CommInterface_t interface)
+static void printJanusHeaderParameter(PreambleValue_t parameter, uint8_t* out_buffer, CommInterface_t interface)
 {
   if (parameter.valid == true) {
     sprintf((char*) out_buffer, "%u\r\n", parameter.value);
@@ -236,32 +349,52 @@ void printJanusHeaderParameter(PreambleValue_t parameter, uint8_t* out_buffer, C
   }
 }
 
-void printSenderId(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface)
+static void printJanusTaggedParameter(const char* label, PreambleValue_t parameter,
+                                      uint8_t* out_buffer, CommInterface_t interface)
+{
+  if (parameter.valid == true) {
+    snprintf((char*) out_buffer, MAX_COMM_OUT_BUFFER_SIZE, "%s: %u", label, parameter.value);
+  }
+  else {
+    snprintf((char*) out_buffer, MAX_COMM_OUT_BUFFER_SIZE,
+             "%s: Parameter not set in preamble!", label);
+  }
+
+  COMM_TransmitHmiLine(HMI_TAG_MSG_RX, (char*) out_buffer, interface);
+}
+
+static void printSenderId(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface)
 {
   COMM_TransmitData("Sender i.d.: ", CALC_LEN, interface);
   printJanusHeaderParameter(msg->preamble.modem_id, out_buffer, interface);
 }
 
-void printDestinationId(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface)
+static void printDestinationId(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface)
 {
   COMM_TransmitData("Destination i.d.: ", CALC_LEN, interface);
   printJanusHeaderParameter(msg->preamble.destination_id, out_buffer, interface);
 }
 
-void printCoding(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface)
+static void printCoding(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface)
 {
   COMM_TransmitData("Coding: ", CALC_LEN, interface);
   printJanusHeaderParameter(msg->preamble.coding, out_buffer, interface);
 }
 
-void printEncryption(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface)
+static void printEncryption(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface)
 {
   COMM_TransmitData("Encryption: ", CALC_LEN, interface);
   printJanusHeaderParameter(msg->preamble.encryption, out_buffer, interface);
 }
 
-void printStringData(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface)
+static void printStringData(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface)
 {
+  if (COMM_IsTagModeEnabled() == true) {
+    copyPrintableString(msg, out_buffer, MAX_COMM_OUT_BUFFER_SIZE);
+    COMM_TransmitHmiLinef(HMI_TAG_MSG_RX, interface, "String: %s", out_buffer);
+    return;
+  }
+
   uint16_t num_characters = msg->uncoded_data_len / 8;
   if (num_characters > PACKET_DATA_MAX_LENGTH_BYTES) {
     sprintf((char*) out_buffer, "Clipped %u : ", num_characters);
@@ -280,8 +413,30 @@ void printStringData(Message_t* msg, uint8_t* out_buffer, CommInterface_t interf
   COMM_TransmitData(msg->data, num_characters, interface);
 }
 
-void printBitsData(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface)
+static void printBitsData(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface)
 {
+  if (COMM_IsTagModeEnabled() == true) {
+    uint16_t length_bits = msg->length_bits;
+    uint16_t buffer_index = 0;
+    if (length_bits > PACKET_DATA_MAX_LENGTH_BYTES * 8) {
+      buffer_index += snprintf((char*) out_buffer, MAX_COMM_OUT_BUFFER_SIZE,
+          "Bits: Clipped %u : ", length_bits);
+      length_bits = PACKET_DATA_MAX_LENGTH_BYTES * 8;
+    }
+    else {
+      buffer_index += snprintf((char*) out_buffer, MAX_COMM_OUT_BUFFER_SIZE, "Bits: ");
+    }
+
+    uint16_t num_bytes = (length_bits + 7) / 8;
+    for (uint16_t i = 0; i < num_bytes && buffer_index < MAX_COMM_OUT_BUFFER_SIZE; i++) {
+      buffer_index += snprintf((char*) &out_buffer[buffer_index],
+          MAX_COMM_OUT_BUFFER_SIZE - buffer_index, "%02X%s", msg->data[i],
+          (i + 1 < num_bytes) ? " " : "");
+    }
+    COMM_TransmitHmiLine(HMI_TAG_MSG_RX, (char*) out_buffer, interface);
+    return;
+  }
+
   uint16_t length_bits = msg->length_bits;
 
   if (length_bits > PACKET_DATA_MAX_LENGTH_BYTES * 8) {
@@ -305,8 +460,21 @@ void printBitsData(Message_t* msg, uint8_t* out_buffer, CommInterface_t interfac
   }
 }
 
-void printInteger(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface)
+static void printInteger(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface)
 {
+  if (COMM_IsTagModeEnabled() == true) {
+    if (msg->length_bits != sizeof(unsigned int) * 8) {
+      COMM_TransmitHmiLinef(HMI_TAG_MSG_RX, interface, "Integer: Forcing %u to %u: %u",
+          msg->length_bits, (unsigned int) (sizeof(unsigned int) * 8),
+          *((unsigned int*) &msg->data[0]));
+    }
+    else {
+      COMM_TransmitHmiLinef(HMI_TAG_MSG_RX, interface, "Integer: %u",
+          *((unsigned int*) &msg->data[0]));
+    }
+    return;
+  }
+
   if (msg->length_bits != sizeof(unsigned int) * 8) {
     sprintf((char*) out_buffer, "Forcing %u to %u: ", msg->length_bits, sizeof(unsigned int) * 8);
     COMM_TransmitData(out_buffer, CALC_LEN, interface);
@@ -315,19 +483,32 @@ void printInteger(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface
   COMM_TransmitData(out_buffer, CALC_LEN, interface);
 }
 
-void printFloat(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface)
+static void printFloat(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface)
 {
   float temp_float;
   memcpy(&temp_float, &msg->data[0], sizeof(float));
+  if (COMM_IsTagModeEnabled() == true) {
+    COMM_TransmitHmiLinef(HMI_TAG_MSG_RX, interface, "Float: %f", temp_float);
+    return;
+  }
   sprintf((char*) out_buffer, "%f", temp_float);
   COMM_TransmitData(out_buffer, CALC_LEN, interface);
 }
 
-void printEvalMessage(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface)
+static void printEvalMessage(Message_t* msg, uint8_t* out_buffer, CommInterface_t interface)
 {
   EvalMessageInfo_t eval_info = msg->eval_info;
   float uncoded_ber = 100.0f * ((float) eval_info.uncoded_errors) / ((float) eval_info.uncoded_bits);
   float coded_ber = 100.0f * ((float) eval_info.coded_errors) / ((float) eval_info.coded_bits);
+
+  if (COMM_IsTagModeEnabled() == true) {
+    COMM_TransmitHmiLine(HMI_TAG_MSG_RX, "Evaluation Message:", interface);
+    COMM_TransmitHmiLinef(HMI_TAG_MSG_RX, interface, "Uncoded BER: %hu/%hu, %.3f%%",
+        eval_info.uncoded_errors, eval_info.uncoded_bits, uncoded_ber);
+    COMM_TransmitHmiLinef(HMI_TAG_MSG_RX, interface, "Coded BER: %hu/%hu, %.3f%%",
+        eval_info.coded_errors, eval_info.coded_bits, coded_ber);
+    return;
+  }
 
   COMM_TransmitData("\r\nEvaluation Message:", CALC_LEN, interface);
 
@@ -338,4 +519,18 @@ void printEvalMessage(Message_t* msg, uint8_t* out_buffer, CommInterface_t inter
   sprintf((char*) out_buffer, "\r\nCoded BER: %hu/%hu, %.3f%%\r\n",
           eval_info.coded_errors, eval_info.coded_bits, coded_ber);
   COMM_TransmitData(out_buffer, CALC_LEN, interface);
+}
+
+static void copyPrintableString(Message_t* msg, uint8_t* out_buffer, uint16_t buffer_len)
+{
+  uint16_t num_characters = msg->uncoded_data_len / 8;
+  if (num_characters >= buffer_len) {
+    num_characters = buffer_len - 1;
+  }
+
+  for (uint16_t i = 0; i < num_characters; i++) {
+    uint8_t data = msg->data[i];
+    out_buffer[i] = (data > 127) ? ' ' : data;
+  }
+  out_buffer[num_characters] = '\0';
 }
