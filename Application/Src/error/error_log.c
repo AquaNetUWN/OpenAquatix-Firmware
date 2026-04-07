@@ -133,6 +133,43 @@ void ErrorLog_PrintLog(CommInterface_t interface)
   }
 }
 
+uint16_t ErrorLog_CopySnapshot(ErrorEntry_t* entries, uint16_t max_entries,
+                               uint32_t* current_reset_count, uint64_t* current_timestamp)
+{
+  ErrorEntry_t sorted_log[MAX_ENTRIES_IN_ERROR_LOG];
+  uint16_t copied_entries = 0;
+  uint32_t current_reset = 0;
+  uint64_t now = 0;
+
+  if (entries == NULL || max_entries == 0) {
+    return 0;
+  }
+
+  uint32_t state = osKernelLock();
+  sortLogByTimestamp((ErrorEntry_t*) error_log, MAX_ENTRIES_IN_ERROR_LOG, sorted_log);
+  current_reset = bkpsram.reset_count;
+  now = HAL_AbsoluteTimestamp();
+  osKernelRestoreLock(state);
+
+  if (current_reset_count != NULL) {
+    *current_reset_count = current_reset;
+  }
+
+  if (current_timestamp != NULL) {
+    *current_timestamp = now;
+  }
+
+  for (uint16_t i = 0; i < MAX_ENTRIES_IN_ERROR_LOG && copied_entries < max_entries; i++) {
+    if (sorted_log[i].timestamp == 0) {
+      continue;
+    }
+
+    entries[copied_entries++] = sorted_log[i];
+  }
+
+  return copied_entries;
+}
+
 /* Private function definitions ----------------------------------------------*/
 
 uint16_t existingErrorIndex(OpenAquatixErrors_t error_code)

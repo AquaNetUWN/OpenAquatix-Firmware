@@ -27,6 +27,10 @@
 #include "mess_main.h"
 #include "base64.h"
 
+#include "sys_pressure.h"
+#include "sys_power.h"
+#include "sys_temperature.h"
+
 #include "cfg_main.h"
 #include "cfg_parameters.h"
 #include "cfg_defaults.h"
@@ -56,6 +60,32 @@ typedef struct {
   CommInterface_t interface;
 } HostStreamSubscription_t;
 
+typedef struct {
+  uint64_t tick_ms;
+  uint32_t cyccnt;
+  bool temp_ready;
+  bool power_ready;
+  bool electrical_ready;
+  bool env_ready;
+  float tj_current_c;
+  float tj_peak_c;
+  float tj_avg_c;
+  float power_latest_w;
+  float power_peak_w;
+  float power_avg_w;
+  float energy_since_boot_j;
+  float voltage_latest_v;
+  float voltage_min_v;
+  float voltage_max_v;
+  float voltage_avg_v;
+  float current_latest_a;
+  float current_min_a;
+  float current_max_a;
+  float current_avg_a;
+  float ambient_temp_c;
+  float pressure_hpa;
+} TelemetrySnapshot_t;
+
 /* Private define ------------------------------------------------------------*/
 
 #define ECHO_USB
@@ -63,6 +93,7 @@ typedef struct {
 
 #define MAX_MENU_NUMBER_LENGTH    2
 #define BUFFER_BACK_TRACK_AMOUNT  5
+#define COMM_EVENT_TELEMETRY      (1UL << 0)
 
 /* Private macro -------------------------------------------------------------*/
 
@@ -93,6 +124,14 @@ static HostStreamSubscription_t host_sense_subscription = {
   .enabled = false,
   .interface = COMM_USB
 };
+static TelemetrySubscriptionStatus_t telemetry_subscription = {
+  .enabled = false,
+  .group = TELEMETRY_GROUP_NONE,
+  .period_ms = 0,
+  .interface = COMM_USB
+};
+static osEventFlagsId_t comm_event_handle = NULL;
+static osTimerId_t telemetry_timer = NULL;
 
 /* Private function prototypes -----------------------------------------------*/
 
@@ -126,6 +165,16 @@ static const char* customTypeString(CustomMessageData_t data_type);
 static const char* janusTypeString(JanusMessageData_t data_type);
 static void appendPreambleFieldToken(char* buffer, size_t buffer_size, size_t* offset,
                                      const char* key, PreambleValue_t value);
+static void initializeTelemetryResources(void);
+static void telemetryTimerCallback(void* argument);
+static const char* telemetryGroupString(TelemetryGroup_t group);
+static bool collectTelemetrySnapshot(TelemetrySnapshot_t* snapshot);
+static size_t appendTelemetryGroupFields(char* buffer, size_t buffer_size, size_t offset,
+                                         TelemetryGroup_t group,
+                                         const TelemetrySnapshot_t* snapshot);
+static bool buildTelemetryLine(char* buffer, size_t buffer_size, const char* prefix,
+                               TelemetryGroup_t group, const TelemetrySnapshot_t* snapshot);
+static void processTelemetryStreamEvent(void);
 
 static void printNotifications(void);
 
@@ -145,6 +194,7 @@ void COMM_StartTask(void *argument)
   registerCommParams();
   Error_ParameterRegistrationComplete();
   CFG_WaitLoadComplete();
+  initializeTelemetryResources();
 
   osDelay(1000);
 
@@ -165,6 +215,7 @@ void COMM_StartTask(void *argument)
     RxState_t state = getHmiInput(&menu_context.interface);
 
     printNotifications();
+    processTelemetryStreamEvent();
 
     switch (state) {
       case DATA_READY:
@@ -376,6 +427,77 @@ bool COMM_IsHostSenseSubscriptionEnabled(void)
   return host_sense_subscription.enabled;
 }
 
+bool COMM_TransmitTelemetrySnapshot(CommInterface_t interface, TelemetryGroup_t group)
+{
+  TelemetrySnapshot_t snapshot;
+  char event_buffer[MAX_COMM_OUT_BUFFER_SIZE];
+
+  if (group == TELEMETRY_GROUP_NONE) {
+    return false;
+  }
+
+  if (collectTelemetrySnapshot(&snapshot) == false ||
+      buildTelemetryLine(event_buffer, sizeof(event_buffer), "OK :telemetry", group,
+                         &snapshot) == false) {
+    return false;
+  }
+
+  COMM_TransmitHmiMachineLine(HMI_TAG_STATUS, event_buffer, interface);
+  return true;
+}
+
+bool COMM_SetHostTelemetrySubscription(bool enabled, TelemetryGroup_t group, uint32_t period_ms,
+                                       CommInterface_t interface)
+{
+  if (comm_event_handle == NULL || telemetry_timer == NULL) {
+    return false;
+  }
+
+  if (enabled == false) {
+    if (telemetry_subscription.enabled == true && osTimerStop(telemetry_timer) != osOK) {
+      return false;
+    }
+
+    telemetry_subscription.enabled = false;
+    telemetry_subscription.group = TELEMETRY_GROUP_NONE;
+    telemetry_subscription.period_ms = 0;
+    osEventFlagsClear(comm_event_handle, COMM_EVENT_TELEMETRY);
+    return true;
+  }
+
+  if (group == TELEMETRY_GROUP_NONE || period_ms == 0) {
+    return false;
+  }
+
+  if (osTimerStop(telemetry_timer) != osOK && telemetry_subscription.enabled == true) {
+    return false;
+  }
+
+  telemetry_subscription.enabled = true;
+  telemetry_subscription.group = group;
+  telemetry_subscription.period_ms = period_ms;
+  telemetry_subscription.interface = interface;
+
+  if (osTimerStart(telemetry_timer, period_ms) != osOK) {
+    telemetry_subscription.enabled = false;
+    telemetry_subscription.group = TELEMETRY_GROUP_NONE;
+    telemetry_subscription.period_ms = 0;
+    return false;
+  }
+
+  return true;
+}
+
+bool COMM_GetHostTelemetrySubscriptionStatus(TelemetrySubscriptionStatus_t* status)
+{
+  if (status == NULL) {
+    return false;
+  }
+
+  *status = telemetry_subscription;
+  return true;
+}
+
 void COMM_ReportHostRxEvent(const Message_t* msg)
 {
   if (msg == NULL || host_rx_subscription.enabled == false) {
@@ -457,6 +579,190 @@ void COMM_ReportHostSenseEvent(const ChannelReport_t* report)
 }
 
 /* Private function definitions ----------------------------------------------*/
+
+void initializeTelemetryResources(void)
+{
+  if (comm_event_handle == NULL) {
+    comm_event_handle = osEventFlagsNew(NULL);
+    if (comm_event_handle == NULL) {
+      REGISTER_ERROR(ERROR_FLAGS_INITIALIZATION);
+    }
+  }
+
+  if (telemetry_timer == NULL) {
+    telemetry_timer = osTimerNew(telemetryTimerCallback, osTimerPeriodic, NULL, NULL);
+    if (telemetry_timer == NULL) {
+      REGISTER_ERROR(ERROR_TIMER_INITIALIZATION);
+    }
+  }
+}
+
+void telemetryTimerCallback(void* argument)
+{
+  (void) argument;
+
+  if (comm_event_handle != NULL) {
+    osEventFlagsSet(comm_event_handle, COMM_EVENT_TELEMETRY);
+  }
+}
+
+const char* telemetryGroupString(TelemetryGroup_t group)
+{
+  switch (group) {
+    case TELEMETRY_GROUP_ALL:
+      return "all";
+    case TELEMETRY_GROUP_TEMP:
+      return "temp";
+    case TELEMETRY_GROUP_POWER:
+      return "power";
+    case TELEMETRY_GROUP_ELECTRICAL:
+      return "electrical";
+    case TELEMETRY_GROUP_ENV:
+      return "env";
+    case TELEMETRY_GROUP_NONE:
+    default:
+      return "none";
+  }
+}
+
+bool collectTelemetrySnapshot(TelemetrySnapshot_t* snapshot)
+{
+  if (snapshot == NULL) {
+    return false;
+  }
+
+  memset(snapshot, 0, sizeof(*snapshot));
+  snapshot->tick_ms = HAL_AbsoluteTimestamp();
+  snapshot->cyccnt = DWT->CYCCNT;
+
+  snapshot->temp_ready = Temperature_IsJunctionReady();
+  snapshot->power_ready = Power_IsReady();
+  snapshot->electrical_ready = Power_IsReady();
+  snapshot->env_ready = Temperature_IsAmbientReady() && Pressure_IsReady();
+
+  if (snapshot->temp_ready == true) {
+    snapshot->tj_current_c = Temperature_GetCurrentTj();
+    snapshot->tj_peak_c = Temperature_GetPeakTj();
+    snapshot->tj_avg_c = Temperature_GetAverageTj();
+  }
+
+  if (snapshot->power_ready == true) {
+    snapshot->power_latest_w = Power_LatestPower();
+    snapshot->power_peak_w = Power_MaxPower();
+    snapshot->power_avg_w = Power_AveragePower();
+    snapshot->energy_since_boot_j =
+        snapshot->power_avg_w * (((float) snapshot->tick_ms) / 1000.0f);
+  }
+
+  if (snapshot->electrical_ready == true) {
+    snapshot->voltage_latest_v = Power_LatestVoltage();
+    snapshot->voltage_min_v = Power_MinVoltage();
+    snapshot->voltage_max_v = Power_MaxVoltage();
+    snapshot->voltage_avg_v = Power_AverageVoltage();
+    snapshot->current_latest_a = Power_LatestCurrent();
+    snapshot->current_min_a = Power_MinCurrent();
+    snapshot->current_max_a = Power_MaxCurrent();
+    snapshot->current_avg_a = Power_AverageCurrent();
+  }
+
+  if (snapshot->env_ready == true) {
+    snapshot->ambient_temp_c = Temperature_GetCurrentTa();
+    snapshot->pressure_hpa = Pressure_GetCurrent();
+  }
+
+  return true;
+}
+
+size_t appendTelemetryGroupFields(char* buffer, size_t buffer_size, size_t offset,
+                                  TelemetryGroup_t group, const TelemetrySnapshot_t* snapshot)
+{
+  if (buffer == NULL || snapshot == NULL) {
+    return offset;
+  }
+
+  if ((group == TELEMETRY_GROUP_ALL || group == TELEMETRY_GROUP_TEMP) &&
+      snapshot->temp_ready == true) {
+    offset = appendMachineToken(buffer, buffer_size, offset,
+        " tj_current_c=%.3f tj_peak_c=%.3f tj_avg_c=%.3f",
+        (double) snapshot->tj_current_c, (double) snapshot->tj_peak_c,
+        (double) snapshot->tj_avg_c);
+  }
+
+  if ((group == TELEMETRY_GROUP_ALL || group == TELEMETRY_GROUP_POWER) &&
+      snapshot->power_ready == true) {
+    offset = appendMachineToken(buffer, buffer_size, offset,
+        " power_latest_w=%.3f power_peak_w=%.3f power_avg_w=%.3f energy_since_boot_j=%.3f",
+        (double) snapshot->power_latest_w, (double) snapshot->power_peak_w,
+        (double) snapshot->power_avg_w, (double) snapshot->energy_since_boot_j);
+  }
+
+  if ((group == TELEMETRY_GROUP_ALL || group == TELEMETRY_GROUP_ELECTRICAL) &&
+      snapshot->electrical_ready == true) {
+    offset = appendMachineToken(buffer, buffer_size, offset,
+        " voltage_latest_v=%.3f voltage_min_v=%.3f voltage_max_v=%.3f voltage_avg_v=%.3f"
+        " current_latest_a=%.3f current_min_a=%.3f current_max_a=%.3f current_avg_a=%.3f",
+        (double) snapshot->voltage_latest_v, (double) snapshot->voltage_min_v,
+        (double) snapshot->voltage_max_v, (double) snapshot->voltage_avg_v,
+        (double) snapshot->current_latest_a, (double) snapshot->current_min_a,
+        (double) snapshot->current_max_a, (double) snapshot->current_avg_a);
+  }
+
+  if ((group == TELEMETRY_GROUP_ALL || group == TELEMETRY_GROUP_ENV) &&
+      snapshot->env_ready == true) {
+    offset = appendMachineToken(buffer, buffer_size, offset,
+        " ambient_temp_c=%.3f pressure_hpa=%.3f",
+        (double) snapshot->ambient_temp_c, (double) snapshot->pressure_hpa);
+  }
+
+  return offset;
+}
+
+bool buildTelemetryLine(char* buffer, size_t buffer_size, const char* prefix,
+                        TelemetryGroup_t group, const TelemetrySnapshot_t* snapshot)
+{
+  size_t offset = 0;
+
+  if (buffer == NULL || buffer_size == 0 || prefix == NULL || snapshot == NULL ||
+      group == TELEMETRY_GROUP_NONE) {
+    return false;
+  }
+
+  offset = appendMachineToken(buffer, buffer_size, offset,
+      "%s group=%s tick_ms=%llu cyccnt=%lu temp_ready=%s power_ready=%s electrical_ready=%s env_ready=%s",
+      prefix, telemetryGroupString(group), (unsigned long long) snapshot->tick_ms,
+      (unsigned long) snapshot->cyccnt, snapshot->temp_ready ? "yes" : "no",
+      snapshot->power_ready ? "yes" : "no",
+      snapshot->electrical_ready ? "yes" : "no",
+      snapshot->env_ready ? "yes" : "no");
+  offset = appendTelemetryGroupFields(buffer, buffer_size, offset, group, snapshot);
+  (void) offset;
+  return true;
+}
+
+void processTelemetryStreamEvent(void)
+{
+  if (comm_event_handle == NULL || telemetry_subscription.enabled == false) {
+    return;
+  }
+
+  uint32_t flags = osEventFlagsGet(comm_event_handle);
+  if ((flags & COMM_EVENT_TELEMETRY) == 0U) {
+    return;
+  }
+
+  osEventFlagsClear(comm_event_handle, COMM_EVENT_TELEMETRY);
+
+  TelemetrySnapshot_t snapshot;
+  char event_buffer[MAX_COMM_OUT_BUFFER_SIZE];
+
+  if (collectTelemetrySnapshot(&snapshot) == false ||
+      buildTelemetryLine(event_buffer, sizeof(event_buffer), "EVENT telemetry",
+                         telemetry_subscription.group, &snapshot) == false) {
+    return;
+  }
+
+  COMM_TransmitHmiMachineLine(HMI_TAG_NOTIFY, event_buffer, telemetry_subscription.interface);
+}
 
 void registerMenus(void)
 {

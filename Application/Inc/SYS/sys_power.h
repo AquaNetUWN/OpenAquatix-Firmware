@@ -140,6 +140,13 @@ float Power_AverageCurrent(void);
  */
 float Power_LatestCurrent(void);
 
+/**
+ * @brief Returns whether at least one power sample has been processed
+ *
+ * @return true when electrical telemetry is available
+ */
+bool Power_IsReady(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -60,6 +60,22 @@ typedef enum {
   HMI_INPUT_CONTEXT_FUNCTION
 } HmiInputContext_t;
 
+typedef enum {
+  TELEMETRY_GROUP_NONE,
+  TELEMETRY_GROUP_ALL,
+  TELEMETRY_GROUP_TEMP,
+  TELEMETRY_GROUP_POWER,
+  TELEMETRY_GROUP_ELECTRICAL,
+  TELEMETRY_GROUP_ENV
+} TelemetryGroup_t;
+
+typedef struct {
+  bool enabled;
+  TelemetryGroup_t group;
+  uint32_t period_ms;
+  CommInterface_t interface;
+} TelemetrySubscriptionStatus_t;
+
 typedef struct {
   uint8_t buffer[MAX_COMM_IN_BUFFER_SIZE];
   uint16_t length;
@@ -254,6 +270,35 @@ void COMM_ReportHostRxEvent(const Message_t* msg);
  * @param report Completed channel report metadata
  */
 void COMM_ReportHostSenseEvent(const ChannelReport_t* report);
+
+/**
+ * @brief Emits a machine-readable telemetry snapshot
+ *
+ * @param interface Target interface
+ * @param group Telemetry group to emit
+ * @return true if the snapshot was emitted successfully
+ */
+bool COMM_TransmitTelemetrySnapshot(CommInterface_t interface, TelemetryGroup_t group);
+
+/**
+ * @brief Enables, disables, or reconfigures the periodic telemetry stream
+ *
+ * @param enabled true to enable the stream, false to disable it
+ * @param group Telemetry group to stream when enabled
+ * @param period_ms Stream cadence in milliseconds when enabled
+ * @param interface Target interface for streamed events when enabling
+ * @return true if the subscription state was applied successfully
+ */
+bool COMM_SetHostTelemetrySubscription(bool enabled, TelemetryGroup_t group, uint32_t period_ms,
+                                       CommInterface_t interface);
+
+/**
+ * @brief Returns the current telemetry stream subscription state
+ *
+ * @param status Destination for the current subscription state
+ * @return true if status was written successfully
+ */
+bool COMM_GetHostTelemetrySubscriptionStatus(TelemetrySubscriptionStatus_t* status);
 
 /* Private defines -----------------------------------------------------------*/
 

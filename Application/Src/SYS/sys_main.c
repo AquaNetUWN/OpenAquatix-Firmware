@@ -73,6 +73,7 @@ void SYS_StartTask(void* argument)
   for (;;) {
     LED_Update();
     Temperature_Process();
+    Pressure_Process();
     Power_Process();
     SleepManager_Enter();
 

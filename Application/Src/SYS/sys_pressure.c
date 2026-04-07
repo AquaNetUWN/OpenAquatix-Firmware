@@ -35,6 +35,7 @@ static uint16_t p_buf_head = 0;
 static uint16_t p_buf_tail = 0;
 
 static float current_pressure_hpa = 0.0f;
+static bool pressure_ready = false;
 
 /* Private function prototypes -----------------------------------------------*/
 
@@ -47,6 +48,7 @@ void Pressure_Init(void)
   RETURN_IF_ERROR_PRESENT();
   p_buf_head = 0;
   p_buf_tail = 0;
+  pressure_ready = false;
   LPS_RegisterPressureBuf(p_buf, PRESSURE_BUFFER_SIZE, &p_buf_head);
 }
 
@@ -54,6 +56,7 @@ void Pressure_Process(void)
 {
   while (p_buf_head != p_buf_tail) {
     current_pressure_hpa = LPS_ConvertRawPressure(p_buf[p_buf_tail]);
+    pressure_ready = true;
     p_buf_tail = (p_buf_tail + 1) % PRESSURE_BUFFER_SIZE;
   }
 }
@@ -61,6 +64,11 @@ void Pressure_Process(void)
 float Pressure_GetCurrent(void)
 {
   return current_pressure_hpa;
+}
+
+bool Pressure_IsReady(void)
+{
+  return pressure_ready;
 }
 
 /* Private function definitions ----------------------------------------------*/

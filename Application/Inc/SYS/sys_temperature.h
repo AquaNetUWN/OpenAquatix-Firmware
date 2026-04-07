@@ -87,6 +87,13 @@ float Temperature_GetCurrentTj(void);
 float Temperature_GetPeakTj(void);
 
 /**
+ * @brief Returns whether at least one junction temperature sample has been processed
+ *
+ * @return true when junction temperature data is available
+ */
+bool Temperature_IsJunctionReady(void);
+
+/**
  * @brief Average ambient temperature since reset
  * 
  * @return floating point average ambient temperature in C
@@ -106,6 +113,13 @@ float Temperature_GetCurrentTa(void);
  * @return floating point peak ambient temperature in C
  */
 float Temperature_GetPeakTa(void);
+
+/**
+ * @brief Returns whether at least one ambient temperature sample has been processed
+ *
+ * @return true when ambient temperature data is available
+ */
+bool Temperature_IsAmbientReady(void);
 
 /* Private defines -----------------------------------------------------------*/
 

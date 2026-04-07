@@ -190,4 +190,9 @@ float Power_LatestCurrent(void)
   return power_buffer[index].current_A;
 }
 
+bool Power_IsReady(void)
+{
+  return acc_count > 0;
+}
+
 /* Private function definitions ----------------------------------------------*/

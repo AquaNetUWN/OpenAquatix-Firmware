@@ -68,6 +68,18 @@ void ErrorLog_LogError(const char* file_name, const char* task_name,
  */
 void ErrorLog_PrintLog(CommInterface_t interface);
 
+/**
+ * @brief Copies a sorted snapshot of the current retained error log entries
+ *
+ * @param entries Destination array for sorted entries
+ * @param max_entries Capacity of the destination array
+ * @param current_reset_count Optional output for the current reset counter
+ * @param current_timestamp Optional output for the current absolute timestamp
+ * @return uint16_t Number of valid entries copied into the destination array
+ */
+uint16_t ErrorLog_CopySnapshot(ErrorEntry_t* entries, uint16_t max_entries,
+                               uint32_t* current_reset_count, uint64_t* current_timestamp);
+
 /* Private defines -----------------------------------------------------------*/
 
 #ifdef __cplusplus

@@ -58,6 +58,7 @@ static uint16_t tj_buf_tail = 0; // Where to start processing data from
 
 static float current_tj;
 static float tj_max = -1000.0f; // -1000 So the first value always overwrites
+static bool tj_ready = false;
 
 // The number of temperature readings that have been taken
 static uint64_t tj_count = 0;
@@ -74,6 +75,7 @@ static uint16_t ta_buf_tail = 0;
 
 static float current_ta;
 static float ta_max = -1000.0f;
+static bool ta_ready = false;
 
 static uint64_t ta_count = 0;
 static uint64_t accumulated_raw_ta = 0;
@@ -95,6 +97,8 @@ void Temperature_Init()
 
   ta_buf_head = 0;
   ta_buf_tail = 0;
+  tj_ready = false;
+  ta_ready = false;
   LPS_RegisterTemperatureBuf(ta_buf, TEMPERATURE_BUFFER_SIZE, &ta_buf_head);
 }
 
@@ -122,6 +126,7 @@ void Temperature_Process()
     tj_count++;
 
     current_tj = tj_buf[tj_buf_tail].converted_value_c;
+    tj_ready = true;
     if (tj_buf[tj_buf_tail].converted_value_c > tj_max) {
       tj_max = tj_buf[tj_buf_tail].converted_value_c;
     }
@@ -134,6 +139,7 @@ void Temperature_Process()
 
     float val_c = LPS_ConvertRawTemperature(ta_buf[ta_buf_tail]);
     current_ta = val_c;
+    ta_ready = true;
     if (val_c > ta_max) {
       ta_max = val_c;
     }
@@ -158,6 +164,11 @@ float Temperature_GetPeakTj()
   return tj_max;
 }
 
+bool Temperature_IsJunctionReady(void)
+{
+  return tj_ready;
+}
+
 float Temperature_GetAverageTa(void)
 {
   uint16_t raw_average = accumulated_raw_ta = ta_count;
@@ -173,6 +184,11 @@ float Temperature_GetCurrentTa(void)
 float Temperature_GetPeakTa(void)
 {
   return ta_max;
+}
+
+bool Temperature_IsAmbientReady(void)
+{
+  return ta_ready;
 }
 
 /* Private function definitions ----------------------------------------------*/

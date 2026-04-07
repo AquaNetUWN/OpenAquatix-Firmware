@@ -14,6 +14,7 @@
 #include "cfg_import_export.h"
 #include "cfg_parameters.h"
 #include "comm_main.h"
+#include "error_log.h"
 #include "mac_main.h"
 #include "mac_protocol.h"
 #include "mess_main.h"
@@ -52,11 +53,13 @@ static bool parseKeyValueArgument(char* arg, char** key, char** value);
 static bool parseBooleanValue(const char* text, bool* enabled);
 static bool parseUint32Value(const char* text, uint32_t* value);
 static bool parseUint16Value(const char* text, uint16_t* value);
+static bool parseTelemetryGroupValue(const char* text, TelemetryGroup_t* group);
 static bool parseProtocolValue(const char* text, MessagingProtocol_t* protocol);
 static bool parseCustomTypeValue(const char* text, CustomMessageData_t* data_type);
 static bool parseJanusTypeValue(const char* text, JanusMessageData_t* data_type);
 static const char* protocolToString(MessagingProtocol_t protocol);
 static const char* macModeToString(bool host_mode_enabled);
+static void sanitizeMachineToken(const char* input, char* output, size_t output_size);
 static bool queueRegularMessage(const Message_t* msg);
 static bool transmitMessage(const char* data, bool use_feedback);
 static bool handleImmediateTransmitCommand(CommandContext_t* context, char* args,
@@ -77,17 +80,25 @@ static bool handlePrintCommand(CommandContext_t* context, char* args);
 static bool handleModeCommand(CommandContext_t* context, char* args);
 static bool handleTimeCommand(CommandContext_t* context, char* args);
 static bool handleTransmitCommand(CommandContext_t* context, char* args);
+static bool handleRangeCommand(CommandContext_t* context, char* args);
 static bool handleTransmitAtCommand(CommandContext_t* context, char* args);
 static bool handleCancelTxCommand(CommandContext_t* context, char* args);
 static bool handleRxSubscriptionCommand(CommandContext_t* context, char* args);
 static bool handleSenseSubscriptionCommand(CommandContext_t* context, char* args);
 static bool handleStatusCommand(CommandContext_t* context, char* args);
+static bool handleTelemetryCommand(CommandContext_t* context, char* args);
+static bool handleTelemetrySubscriptionCommand(CommandContext_t* context, char* args);
+static bool handleErrorLogCommand(CommandContext_t* context, char* args);
 static bool handleImportConfigCommand(CommandContext_t* context, char* args);
 static bool handleConfigCommand(CommandContext_t* context, char* args);
 
 /* Private variables ---------------------------------------------------------*/
 
 extern osMessageQueueId_t regular_tx_queue;
+
+#define DEFAULT_TELEMETRY_PERIOD_MS    1000U
+#define MIN_TELEMETRY_PERIOD_MS        100U
+#define MAX_TELEMETRY_PERIOD_MS        60000U
 
 static const CommandEntry_t commands[] = {
   {
@@ -133,6 +144,12 @@ static const CommandEntry_t commands[] = {
     handleTransmitCommand
   },
   {
+    "range",
+    "Queue an immediate ranging request through the selected route",
+    COMM_COMMAND_DELIMITER_STR "range [route=transducer|feedback]",
+    handleRangeCommand
+  },
+  {
     "txat",
     "Schedule a host-controlled transmission at a future device CYCCNT",
     COMM_COMMAND_DELIMITER_STR "txat route=<transducer|feedback> protocol=<custom|janus> payload=<base64> tx_cyccnt=<u32> [type=<custom_type>] [janus_type=sms] [modem_id=<u16>] [is_mobile=<0|1>] [reservation_time_10ms=<u16>] [schedule_flag=<u16>] [destination_id=<u16>] [tx_rx_capable=<0|1>] [can_forward=<0|1>] [coding=<u16>] [encryption=<u16>]",
@@ -161,6 +178,24 @@ static const CommandEntry_t commands[] = {
     "Report host MAC mode, subscriptions, queue depths, and pending scheduled TX state",
     COMM_COMMAND_DELIMITER_STR "status",
     handleStatusCommand
+  },
+  {
+    "telemetry",
+    "Return a machine-readable telemetry snapshot",
+    COMM_COMMAND_DELIMITER_STR "telemetry [all|temp|power|electrical|env]",
+    handleTelemetryCommand
+  },
+  {
+    "telemetrysub",
+    "Enable or disable periodic machine-readable telemetry streaming",
+    COMM_COMMAND_DELIMITER_STR "telemetrysub on|off [all|temp|power|electrical|env] [period_ms=<u32>]",
+    handleTelemetrySubscriptionCommand
+  },
+  {
+    "errorlog",
+    "Dump the retained error log in machine-readable form",
+    COMM_COMMAND_DELIMITER_STR "errorlog",
+    handleErrorLogCommand
   },
   {
     "importcfg",
@@ -474,6 +509,36 @@ static bool parseUint16Value(const char* text, uint16_t* value)
   return true;
 }
 
+static bool parseTelemetryGroupValue(const char* text, TelemetryGroup_t* group)
+{
+  if (text == NULL || group == NULL) {
+    return false;
+  }
+
+  if (stringsEqualIgnoreCase(text, "all") == true) {
+    *group = TELEMETRY_GROUP_ALL;
+    return true;
+  }
+  if (stringsEqualIgnoreCase(text, "temp") == true) {
+    *group = TELEMETRY_GROUP_TEMP;
+    return true;
+  }
+  if (stringsEqualIgnoreCase(text, "power") == true) {
+    *group = TELEMETRY_GROUP_POWER;
+    return true;
+  }
+  if (stringsEqualIgnoreCase(text, "electrical") == true) {
+    *group = TELEMETRY_GROUP_ELECTRICAL;
+    return true;
+  }
+  if (stringsEqualIgnoreCase(text, "env") == true) {
+    *group = TELEMETRY_GROUP_ENV;
+    return true;
+  }
+
+  return false;
+}
+
 static bool parseProtocolValue(const char* text, MessagingProtocol_t* protocol)
 {
   if (text == NULL || protocol == NULL) {
@@ -560,6 +625,41 @@ static const char* protocolToString(MessagingProtocol_t protocol)
 static const char* macModeToString(bool host_mode_enabled)
 {
   return host_mode_enabled ? "hostmac" : "local";
+}
+
+static void sanitizeMachineToken(const char* input, char* output, size_t output_size)
+{
+  size_t out_index = 0;
+  bool previous_was_underscore = false;
+
+  if (output == NULL || output_size == 0) {
+    return;
+  }
+
+  if (input == NULL) {
+    output[0] = '\0';
+    return;
+  }
+
+  while (*input != '\0' && out_index + 1 < output_size) {
+    unsigned char current = (unsigned char) *input++;
+    if (isalnum(current) != 0) {
+      output[out_index++] = (char) tolower(current);
+      previous_was_underscore = false;
+      continue;
+    }
+
+    if (previous_was_underscore == false) {
+      output[out_index++] = '_';
+      previous_was_underscore = true;
+    }
+  }
+
+  if (out_index > 0 && output[out_index - 1] == '_') {
+    out_index--;
+  }
+
+  output[out_index] = '\0';
 }
 
 static bool queueRegularMessage(const Message_t* msg)
@@ -911,6 +1011,56 @@ static bool handleTransmitCommand(CommandContext_t* context, char* args)
   return handleImmediateTransmitCommand(context, args, &commands[6], "tx");
 }
 
+static bool handleRangeCommand(CommandContext_t* context, char* args)
+{
+  char* argv[1];
+  int argc = 0;
+  bool use_feedback = false;
+
+  if (parseArguments(args, argv, 1, &argc) == false || argc > 1) {
+    return false;
+  }
+
+  if (argc == 1) {
+    char* key = NULL;
+    char* value = NULL;
+
+    if (parseKeyValueArgument(argv[0], &key, &value) == false ||
+        stringsEqualIgnoreCase(key, "route") == false) {
+      return false;
+    }
+
+    if (stringsEqualIgnoreCase(value, "transducer") == true) {
+      use_feedback = false;
+    }
+    else if (stringsEqualIgnoreCase(value, "feedback") == true) {
+      use_feedback = true;
+    }
+    else {
+      return false;
+    }
+  }
+
+  if (print_event_handle == NULL) {
+    COMM_TransmitHmiMachineLine(HMI_TAG_ERROR,
+        "Failed to queue ranging request", context->interface);
+    return true;
+  }
+
+  uint32_t flags = osEventFlagsSet(print_event_handle,
+      use_feedback ? MESS_REQUEST_RANGE_FEEDBACK : MESS_REQUEST_RANGE_TRANSDUCER);
+  if (flags & osFlagsError) {
+    COMM_TransmitHmiMachineLine(HMI_TAG_ERROR,
+        "Failed to queue ranging request", context->interface);
+    return true;
+  }
+
+  COMM_TransmitHmiMachineLinef(HMI_TAG_STATUS, context->interface,
+      "OK %crange route=%s", COMM_COMMAND_DELIMITER,
+      use_feedback ? "feedback" : "transducer");
+  return true;
+}
+
 static bool handleTransmitAtCommand(CommandContext_t* context, char* args)
 {
   char* argv[20];
@@ -1112,6 +1262,102 @@ static bool handleSenseSubscriptionCommand(CommandContext_t* context, char* args
   return true;
 }
 
+static bool handleTelemetryCommand(CommandContext_t* context, char* args)
+{
+  char* argv[1];
+  int argc = 0;
+  TelemetryGroup_t group = TELEMETRY_GROUP_ALL;
+
+  if (parseArguments(args, argv, 1, &argc) == false || argc > 1) {
+    return false;
+  }
+
+  if (argc == 1 && parseTelemetryGroupValue(argv[0], &group) == false) {
+    return false;
+  }
+
+  if (COMM_TransmitTelemetrySnapshot(context->interface, group) == false) {
+    COMM_TransmitHmiMachineLine(HMI_TAG_ERROR,
+        "Failed to build telemetry snapshot", context->interface);
+  }
+
+  return true;
+}
+
+static bool handleTelemetrySubscriptionCommand(CommandContext_t* context, char* args)
+{
+  char* argv[3];
+  int argc = 0;
+  bool enabled = false;
+  TelemetryGroup_t group = TELEMETRY_GROUP_ALL;
+  uint32_t period_ms = DEFAULT_TELEMETRY_PERIOD_MS;
+  bool group_seen = false;
+  bool period_seen = false;
+
+  if (parseArguments(args, argv, 3, &argc) == false || argc < 1 || argc > 3) {
+    return false;
+  }
+
+  if (parseBooleanValue(argv[0], &enabled) == false) {
+    return false;
+  }
+
+  if (enabled == false) {
+    if (argc != 1) {
+      return false;
+    }
+
+    if (COMM_SetHostTelemetrySubscription(false, TELEMETRY_GROUP_NONE, 0,
+                                          context->interface) == false) {
+      COMM_TransmitHmiMachineLine(HMI_TAG_ERROR,
+          "Failed to disable telemetry stream", context->interface);
+      return true;
+    }
+
+    COMM_TransmitHmiMachineLinef(HMI_TAG_STATUS, context->interface,
+        "OK %ctelemetrysub off", COMM_COMMAND_DELIMITER);
+    return true;
+  }
+
+  for (int i = 1; i < argc; i++) {
+    char* key = NULL;
+    char* value = NULL;
+
+    if (strchr(argv[i], '=') != NULL) {
+      if (parseKeyValueArgument(argv[i], &key, &value) == false ||
+          stringsEqualIgnoreCase(key, "period_ms") == false ||
+          period_seen == true ||
+          parseUint32Value(value, &period_ms) == false ||
+          period_ms < MIN_TELEMETRY_PERIOD_MS ||
+          period_ms > MAX_TELEMETRY_PERIOD_MS) {
+        return false;
+      }
+      period_seen = true;
+      continue;
+    }
+
+    if (group_seen == true || parseTelemetryGroupValue(argv[i], &group) == false) {
+      return false;
+    }
+    group_seen = true;
+  }
+
+  if (COMM_SetHostTelemetrySubscription(true, group, period_ms, context->interface) == false) {
+    COMM_TransmitHmiMachineLine(HMI_TAG_ERROR,
+        "Failed to configure telemetry stream", context->interface);
+    return true;
+  }
+
+  COMM_TransmitHmiMachineLinef(HMI_TAG_STATUS, context->interface,
+      "OK %ctelemetrysub on group=%s period_ms=%lu", COMM_COMMAND_DELIMITER,
+      group == TELEMETRY_GROUP_TEMP ? "temp" :
+      group == TELEMETRY_GROUP_POWER ? "power" :
+      group == TELEMETRY_GROUP_ELECTRICAL ? "electrical" :
+      group == TELEMETRY_GROUP_ENV ? "env" : "all",
+      (unsigned long) period_ms);
+  return true;
+}
+
 static bool handleStatusCommand(CommandContext_t* context, char* args)
 {
   char* argv[1];
@@ -1128,8 +1374,15 @@ static bool handleStatusCommand(CommandContext_t* context, char* args)
     return true;
   }
 
+  TelemetrySubscriptionStatus_t telemetry_status;
+  if (COMM_GetHostTelemetrySubscriptionStatus(&telemetry_status) == false) {
+    COMM_TransmitHmiMachineLine(HMI_TAG_ERROR,
+        "Failed to retrieve telemetry status", context->interface);
+    return true;
+  }
+
   COMM_TransmitHmiMachineLinef(HMI_TAG_STATUS, context->interface,
-      "OK %cstatus mode=%s rxsub=%s sense=%s mac_regular_tx_depth=%lu mac_emergency_tx_depth=%lu mess_tx_depth=%lu pending_scheduled_tx=%s request_id=%lu tx_cyccnt=%lu",
+      "OK %cstatus mode=%s rxsub=%s sense=%s mac_regular_tx_depth=%lu mac_emergency_tx_depth=%lu mess_tx_depth=%lu pending_scheduled_tx=%s request_id=%lu tx_cyccnt=%lu telemetrysub=%s telemetry_group=%s telemetry_period_ms=%lu",
       COMM_COMMAND_DELIMITER,
       macModeToString(status.host_mode_enabled),
       COMM_IsHostRxSubscriptionEnabled() ? "on" : "off",
@@ -1139,7 +1392,66 @@ static bool handleStatusCommand(CommandContext_t* context, char* args)
       (unsigned long) MESS_GetTxQueueDepth(),
       status.scheduled_tx_pending ? "yes" : "no",
       (unsigned long) status.scheduled_tx_id,
-      (unsigned long) status.scheduled_tx_cyccnt);
+      (unsigned long) status.scheduled_tx_cyccnt,
+      telemetry_status.enabled ? "on" : "off",
+      telemetry_status.group == TELEMETRY_GROUP_TEMP ? "temp" :
+      telemetry_status.group == TELEMETRY_GROUP_POWER ? "power" :
+      telemetry_status.group == TELEMETRY_GROUP_ELECTRICAL ? "electrical" :
+      telemetry_status.group == TELEMETRY_GROUP_ENV ? "env" :
+      telemetry_status.group == TELEMETRY_GROUP_ALL ? "all" : "none",
+      (unsigned long) telemetry_status.period_ms);
+  return true;
+}
+
+static bool handleErrorLogCommand(CommandContext_t* context, char* args)
+{
+  char* argv[1];
+  int argc = 0;
+  ErrorEntry_t entries[MAX_ENTRIES_IN_ERROR_LOG];
+  uint32_t current_reset_count = 0;
+  uint64_t current_timestamp = 0;
+
+  if (parseArguments(args, argv, 1, &argc) == false || argc != 0) {
+    return false;
+  }
+
+  uint16_t count = ErrorLog_CopySnapshot(entries, MAX_ENTRIES_IN_ERROR_LOG,
+                                         &current_reset_count, &current_timestamp);
+
+  COMM_TransmitHmiMachineLinef(HMI_TAG_STATUS, context->interface,
+      "OK %cerrorlog count=%u current_tick_ms=%llu current_reset_count=%lu",
+      COMM_COMMAND_DELIMITER, count, (unsigned long long) current_timestamp,
+      (unsigned long) current_reset_count);
+
+  for (uint16_t i = 0; i < count; i++) {
+    const char* description = Error_GetDescription((OpenAquatixErrors_t) entries[i].error_code);
+    const char* severity = Error_GetSeverity((OpenAquatixErrors_t) entries[i].error_code);
+    char severity_token[32];
+    sanitizeMachineToken(severity, severity_token, sizeof(severity_token));
+
+    size_t encoded_length = 0;
+    const char* safe_description = (description != NULL) ? description : "";
+    unsigned char* encoded_description =
+        base64_encode((const unsigned char*) safe_description, strlen(safe_description),
+                      &encoded_length);
+    if (encoded_description == NULL) {
+      COMM_TransmitHmiMachineLine(HMI_TAG_ERROR,
+          "Failed to encode error log description", context->interface);
+      return true;
+    }
+
+    COMM_TransmitHmiMachineLinef(HMI_TAG_STATUS, context->interface,
+        "ENTRY %cerrorlog index=%u timestamp_ms=%llu reset_count=%lu error_code=%lu severity=%s file=%s task=%s line=%lu occurrences=%lu description_b64=%s",
+        COMM_COMMAND_DELIMITER, i, (unsigned long long) entries[i].timestamp,
+        (unsigned long) entries[i].reset_count, (unsigned long) entries[i].error_code,
+        severity_token[0] != '\0' ? severity_token : "unknown",
+        entries[i].file_name != NULL ? entries[i].file_name : "unknown",
+        entries[i].task_name != NULL ? entries[i].task_name : "unknown",
+        (unsigned long) entries[i].line_number, (unsigned long) entries[i].occurrences,
+        (char*) encoded_description);
+    free(encoded_description);
+  }
+
   return true;
 }
 

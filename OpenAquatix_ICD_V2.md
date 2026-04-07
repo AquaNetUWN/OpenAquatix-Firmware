@@ -135,11 +135,15 @@ require menu driving:
 - `:time`
 - `:tx <base64>`
 - `:txfb <base64>`
+- `:range [route=transducer|feedback]`
 - `:txat route=<transducer|feedback> protocol=<custom|janus> payload=<base64> tx_cyccnt=<u32> ...`
 - `:cancel_tx <request_id>`
 - `:rxsub on|off`
 - `:sense on|off`
 - `:status`
+- `:telemetry [all|temp|power|electrical|env]`
+- `:telemetrysub on|off [all|temp|power|electrical|env] [period_ms=<u32>]`
+- `:errorlog`
 
 ` :txat ` required fields:
 - `route`
@@ -167,8 +171,12 @@ Response contract:
 Examples:
 - `[STATUS] OK :time tick_ms=123456 cyccnt=987654321`
 - `[STATUS] OK :mode hostmac on`
+- `[STATUS] OK :range route=transducer`
 - `[STATUS] OK :txat request_id=4 protocol=custom tx_cyccnt=123456789`
-- `[STATUS] OK :status mode=hostmac rxsub=on sense=on ...`
+- `[STATUS] OK :status mode=hostmac rxsub=on sense=on telemetrysub=off telemetry_group=none telemetry_period_ms=0 ...`
+- `[STATUS] OK :telemetry group=all tick_ms=123456 cyccnt=987654321 temp_ready=yes power_ready=yes electrical_ready=yes env_ready=yes ...`
+- `[STATUS] OK :telemetrysub on group=power period_ms=1000`
+- `[STATUS] OK :errorlog count=2 current_tick_ms=123456 current_reset_count=3`
 
 ## 3.5 Host Event Streams
 
@@ -193,8 +201,14 @@ Included RX metadata may contain:
 - `doppler_mps`
 - `range_m` for ranging responses
 
+Dedicated ranging requests issued with `:range` reuse this same RX event path;
+there is no separate ranging completion event.
+
 When `:sense on` is enabled, channel-sensing telemetry is emitted as:
 - `[NOTIFY] EVENT sense timestamp_ms=<u64> cyccnt=<u32> psd=<float>`
+
+When `:telemetrysub on` is enabled, periodic telemetry is emitted as:
+- `[NOTIFY] EVENT telemetry group=<all|temp|power|electrical|env> tick_ms=<u64> cyccnt=<u32> temp_ready=<yes|no> power_ready=<yes|no> electrical_ready=<yes|no> env_ready=<yes|no> ...`
 
 ## 4. Format Constraints for Testability
 

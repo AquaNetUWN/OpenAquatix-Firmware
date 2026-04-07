@@ -55,6 +55,13 @@ void Pressure_Process(void);
  */
 float Pressure_GetCurrent(void);
 
+/**
+ * @brief Returns whether at least one pressure sample has been processed
+ *
+ * @return true when pressure telemetry is available
+ */
+bool Pressure_IsReady(void);
+
 /* Private defines -----------------------------------------------------------*/
 
 #ifdef __cplusplus

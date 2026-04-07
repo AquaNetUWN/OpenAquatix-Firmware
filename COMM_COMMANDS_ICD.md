@@ -438,6 +438,54 @@ Failure conditions:
 - decoded payload exceeds `PACKET_DATA_MAX_LENGTH_BYTES`
 - no space / queue failure
 
+### `:range`
+
+Usage:
+
+```text
+:range [route=transducer|feedback]
+```
+
+Description:
+
+- Queues an immediate ranging request through the same MESS event-driven path
+  used by the TX/RX menu.
+- This is a dedicated command-surface shortcut for immediate ranging; it does
+  not introduce a separate ranging subsystem or result stream.
+
+Behavior:
+
+- takes zero or one argument
+- no argument defaults to `route=transducer`
+- `route=feedback` selects the feedback network
+- does not require host MAC mode
+- enqueues `MESS_REQUEST_RANGE_TRANSDUCER` or `MESS_REQUEST_RANGE_FEEDBACK`
+
+Success response:
+
+```text
+[STATUS] OK :range route=transducer
+[STATUS] OK :range route=feedback
+```
+
+Failure conditions:
+
+- malformed or extra arguments
+- `route` missing its value
+- invalid `route`
+- ranging request could not be queued into the existing event path
+
+Operational effect:
+
+- A successful command only means the request was accepted into the existing
+  ranging path.
+- Ranging completion remains asynchronous and uses the normal RX handling path.
+- When `:rxsub on` is enabled, completed ranging responses continue to emit the
+  normal `[MSG_RX] EVENT ... range_m=<float> ...` line.
+- When `:print on` is enabled, the legacy print path continues to display the
+  human-readable range output.
+- Existing async ranging failure text is unchanged.
+
 ### `:txat`
 
 Usage:
@@ -649,7 +697,7 @@ Behavior:
 Success response format:
 
 ```text
-[STATUS] OK :status mode=<hostmac|local> rxsub=<on|off> sense=<on|off> mac_regular_tx_depth=<u32> mac_emergency_tx_depth=<u32> mess_tx_depth=<u32> pending_scheduled_tx=<yes|no> request_id=<u32> tx_cyccnt=<u32>
+[STATUS] OK :status mode=<hostmac|local> rxsub=<on|off> sense=<on|off> mac_regular_tx_depth=<u32> mac_emergency_tx_depth=<u32> mess_tx_depth=<u32> pending_scheduled_tx=<yes|no> request_id=<u32> tx_cyccnt=<u32> telemetrysub=<on|off> telemetry_group=<all|temp|power|electrical|env|none> telemetry_period_ms=<u32>
 ```
 
 Field meanings:
@@ -664,6 +712,106 @@ Field meanings:
   the MAC host slot
 - `request_id`: current scheduled request id, or `0` when none is pending
 - `tx_cyccnt`: target scheduled `CYCCNT`, or `0` when none is pending
+- `telemetrysub`: whether periodic telemetry streaming is enabled
+- `telemetry_group`: current telemetry stream group, or `none` when disabled
+- `telemetry_period_ms`: current telemetry stream period, or `0` when disabled
+
+### `:telemetry`
+
+Usage:
+
+```text
+:telemetry [all|temp|power|electrical|env]
+```
+
+Description:
+
+- Returns a compact machine-readable telemetry snapshot for one logical group or
+  for all supported groups at once.
+- Always includes device timing references and per-group ready flags so hosts
+  can distinguish unavailable metrics from valid zero-valued measurements.
+
+Behavior:
+
+- takes zero or one argument
+- default group is `all`
+- valid groups are `all`, `temp`, `power`, `electrical`, and `env`
+- emits one machine-readable status line
+- omits numeric fields for any group whose corresponding ready flag is `no`
+
+Success response format:
+
+```text
+[STATUS] OK :telemetry group=<all|temp|power|electrical|env> tick_ms=<u64> cyccnt=<u32> temp_ready=<yes|no> power_ready=<yes|no> electrical_ready=<yes|no> env_ready=<yes|no> ...
+```
+
+Possible numeric fields:
+
+- `temp`: `tj_current_c`, `tj_peak_c`, `tj_avg_c`
+- `power`: `power_latest_w`, `power_peak_w`, `power_avg_w`, `energy_since_boot_j`
+- `electrical`: `voltage_latest_v`, `voltage_min_v`, `voltage_max_v`,
+  `voltage_avg_v`, `current_latest_a`, `current_min_a`, `current_max_a`,
+  `current_avg_a`
+- `env`: `ambient_temp_c`, `pressure_hpa`
+
+### `:telemetrysub`
+
+Usage:
+
+```text
+:telemetrysub on|off [all|temp|power|electrical|env] [period_ms=<u32>]
+```
+
+Description:
+
+- Enables or disables periodic machine-readable telemetry streaming.
+- This is a COMM-owned host stream similar to `:rxsub` and `:sense`, but it is
+  timer-driven rather than message-driven.
+
+Behavior:
+
+- `on` enables telemetry streaming on the current interface
+- default group is `all`
+- default `period_ms` is `1000`
+- valid `period_ms` range is `100..60000`
+- `off` disables telemetry streaming and clears the active stream state
+- the enabled subscription is tied to the last interface that turned it on
+
+Success response examples:
+
+```text
+[STATUS] OK :telemetrysub on group=all period_ms=1000
+[STATUS] OK :telemetrysub on group=power period_ms=250
+[STATUS] OK :telemetrysub off
+```
+
+### `:errorlog`
+
+Usage:
+
+```text
+:errorlog
+```
+
+Description:
+
+- Returns the retained error log in machine-readable form.
+- The response is a summary line followed by zero or more entry lines.
+- Entries are sorted by `reset_count`, then by `timestamp_ms`.
+
+Success response format:
+
+```text
+[STATUS] OK :errorlog count=<u32> current_tick_ms=<u64> current_reset_count=<u32>
+[STATUS] ENTRY :errorlog index=<u32> timestamp_ms=<u64> reset_count=<u32> error_code=<u32> severity=<token> file=<token> task=<token> line=<u32> occurrences=<u32> description_b64=<base64>
+```
+
+Field meanings:
+
+- `count`: number of retained entries returned after the summary line
+- `index`: zero-based index within the sorted snapshot
+- `severity`: token-safe lower-case representation of the current severity text
+- `description_b64`: base64-encoded human-readable error description
 
 ### `:importcfg`
 
@@ -764,6 +912,12 @@ Possible extra fields:
 - `range_m`
 - `payload_b64=<base64>`
 
+For dedicated ranging:
+
+- `:range` results do not use a new event type
+- completed ranging responses continue to surface here as normal RX events with
+  `range_m`
+
 ### Sensing Events
 
 Enabled by:
@@ -778,9 +932,45 @@ Current emitted format:
 [NOTIFY] EVENT sense timestamp_ms=<u64> cyccnt=<u32> psd=<float>
 ```
 
+### Telemetry Events
+
+Enabled by:
+
+```text
+:telemetrysub on [all|temp|power|electrical|env] [period_ms=<u32>]
+```
+
+Current emitted format:
+
+```text
+[NOTIFY] EVENT telemetry group=<all|temp|power|electrical|env> tick_ms=<u64> cyccnt=<u32> temp_ready=<yes|no> power_ready=<yes|no> electrical_ready=<yes|no> env_ready=<yes|no> ...
+```
+
+Possible numeric fields:
+
+- `tj_current_c`
+- `tj_peak_c`
+- `tj_avg_c`
+- `power_latest_w`
+- `power_peak_w`
+- `power_avg_w`
+- `energy_since_boot_j`
+- `voltage_latest_v`
+- `voltage_min_v`
+- `voltage_max_v`
+- `voltage_avg_v`
+- `current_latest_a`
+- `current_min_a`
+- `current_max_a`
+- `current_avg_a`
+- `ambient_temp_c`
+- `pressure_hpa`
+
 ## Known Constraints
 
 - `:tx` currently only creates `PROTOCOL_CUSTOM` / `BITS` messages.
+- `:range` is an immediate ranging-request shortcut only; it does not expose
+  cancellation, last-result state, or a dedicated range event stream.
 - `:txat` only accepts `janus_type=sms` in the current implementation.
 - `:cancel_tx` only cancels a request before the MAC host scheduler hands it to
   `MESS`.

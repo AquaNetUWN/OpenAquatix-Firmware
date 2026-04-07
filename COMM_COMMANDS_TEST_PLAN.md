@@ -145,6 +145,9 @@ Before each command-specific test set:
   - `pending_scheduled_tx=...`
   - `request_id=...`
   - `tx_cyccnt=...`
+  - `telemetrysub=...`
+  - `telemetry_group=...`
+  - `telemetry_period_ms=...`
 
 ## Immediate TX Command
 
@@ -191,6 +194,76 @@ Before each command-specific test set:
 
 - Send a base64 payload that decodes past `PACKET_DATA_MAX_LENGTH_BYTES`
 - Expected: queue failure / decode failure response
+
+## Dedicated Ranging Command
+
+### T15A. `:range` Default Route
+
+- Send:
+  - `:range`
+- Expected:
+  - `[STATUS] OK :range route=transducer`
+
+### T15B. `:range` Feedback Route
+
+- Send:
+  - `:range route=feedback`
+- Expected:
+  - `[STATUS] OK :range route=feedback`
+
+### T15C. `:range` Explicit Transducer Route
+
+- Send:
+  - `:range route=transducer`
+- Expected:
+  - `[STATUS] OK :range route=transducer`
+
+### T15D. `:range` Invalid Arguments
+
+- Send each of:
+  - `:range route=invalid`
+  - `:range foo`
+  - `:range route=transducer extra`
+  - `:range route=`
+- Expected:
+  - usage error for each
+  - no ranging request is queued
+
+### T15E. `:range` Works In Local Mode
+
+1. Send `:mode hostmac off`
+2. Send `:range`
+
+Expected:
+
+- `[STATUS] OK :mode hostmac off`
+- `[STATUS] OK :range route=transducer`
+- no host-mode rejection
+
+### T15F. `:range` Result Reuse
+
+1. Enable `:rxsub on`
+2. Send `:range`
+3. Complete a ranging exchange
+
+Expected:
+
+- normal `[MSG_RX] EVENT ... range_m=<float> ...` output for the ranging
+  response
+- no new dedicated ranging event line
+
+Also verify with `:print on` that the legacy human-readable range output still
+appears for the same response.
+
+### T15G. `:range` Failure Reuse And Regression
+
+- Induce a ranging request failure case after sending `:range`
+- Expected:
+  - existing async notify text still appears, such as `Failed to send ranging request`
+  - no new dedicated ranging notify line appears
+- Regression checks:
+  - existing `:txat ... type=ranging_request` behavior remains unchanged
+  - existing TX/RX menu ranging entries still work
 
 ## Scheduled TX Command
 
@@ -400,22 +473,146 @@ Expected:
 - Expected:
   - `[ERROR] Config command not implemented yet`
 
+## Telemetry Commands
+
+### T40. `:telemetry` Default Snapshot
+
+- Send `:telemetry`
+- Expected one tagged status line containing:
+  - `group=all`
+  - `tick_ms=...`
+  - `cyccnt=...`
+  - `temp_ready=...`
+  - `power_ready=...`
+  - `electrical_ready=...`
+  - `env_ready=...`
+
+### T41. `:telemetry` Grouped Snapshots
+
+- Send each of:
+  - `:telemetry temp`
+  - `:telemetry power`
+  - `:telemetry electrical`
+  - `:telemetry env`
+- Expected:
+  - one tagged status line per command
+  - `group=<requested group>`
+  - only the requested group’s numeric fields are present
+  - all four ready flags are still present
+
+### T42. Early-Boot Readiness
+
+- Issue `:telemetry` immediately after boot or immediately after a task reset
+- Expected:
+  - groups without valid samples report `*_ready=no`
+  - numeric fields for those groups are omitted rather than zero-filled
+
+### T43. `:telemetrysub on` Defaults
+
+- Send `:telemetrysub on`
+- Expected:
+  - `[STATUS] OK :telemetrysub on group=all period_ms=1000`
+  - `:status` shows `telemetrysub=on telemetry_group=all telemetry_period_ms=1000`
+
+### T44. `:telemetrysub` Reconfigure
+
+- Send `:telemetrysub on power period_ms=250`
+- Expected:
+  - `[STATUS] OK :telemetrysub on group=power period_ms=250`
+  - `:status` shows `telemetry_group=power`
+  - `:status` shows `telemetry_period_ms=250`
+
+### T45. Telemetry Event Emission
+
+1. Send `:telemetrysub on env period_ms=1000`
+2. Wait for at least two timer periods
+
+Expected:
+
+- repeated `[NOTIFY] EVENT telemetry ...` lines
+- each line contains:
+  - `group=env`
+  - `tick_ms`
+  - `cyccnt`
+  - all four ready flags
+- when `env_ready=yes`, the line includes:
+  - `ambient_temp_c`
+  - `pressure_hpa`
+
+### T46. `:telemetrysub off`
+
+- Send `:telemetrysub off`
+- Expected:
+  - `[STATUS] OK :telemetrysub off`
+  - `:status` shows `telemetrysub=off telemetry_group=none telemetry_period_ms=0`
+  - telemetry events stop
+
+### T47. Invalid Telemetry Subscription Arguments
+
+- Verify usage/error behavior for:
+  - `:telemetrysub`
+  - `:telemetrysub on invalid`
+  - `:telemetrysub on power period_ms=50`
+  - `:telemetrysub on power period_ms=70000`
+  - `:telemetrysub off power`
+- Expected:
+  - usage error
+  - active telemetry stream state does not change
+
+## Error Log Command
+
+### T48. Empty `:errorlog`
+
+- Clear or start from an empty error log if possible
+- Send `:errorlog`
+- Expected:
+  - `[STATUS] OK :errorlog count=0 current_tick_ms=<value> current_reset_count=<value>`
+  - no entry lines follow
+
+### T49. Populated `:errorlog`
+
+- Trigger or retain at least two known errors
+- Send `:errorlog`
+- Expected:
+  - summary line with `count>=1`
+  - one `[STATUS] ENTRY :errorlog ...` line per retained entry
+  - each entry contains:
+    - `index`
+    - `timestamp_ms`
+    - `reset_count`
+    - `error_code`
+    - `severity`
+    - `file`
+    - `task`
+    - `line`
+    - `occurrences`
+    - `description_b64`
+
+### T50. Error Log Ordering And Encoding
+
+- For a populated log:
+  - confirm entries are ordered by `reset_count`, then `timestamp_ms`
+  - decode `description_b64`
+- Expected:
+  - decoded text matches the current human-readable error description
+  - no spaces appear in the `severity` token
+
 ## Regression Checks
 
-### T40. Menu Navigation Still Works
+### T51. Menu Navigation Still Works
 
 - Navigate menus normally after using several commands
 - Expected: menu system remains responsive
 
-### T41. Existing RX Printing Still Works
+### T52. Existing RX Printing Still Works
 
 - With `:print on`, receive a packet
 - Expected: legacy multi-line print path still works
 
-### T42. Command/Async Interleaving
+### T53. Command/Async Interleaving
 
-- Enable `:rxsub on` and `:sense on`
-- Issue commands while RX or sense events are active
+- Enable `:rxsub on`, `:sense on`, and `:telemetrysub on`
+- Issue commands while RX, sense, or telemetry events are active
 - Expected:
   - command responses remain parseable
   - event lines remain single-line and tagged
@@ -428,5 +625,5 @@ The command system passes when:
 - all negative tests fail deterministically
 - no command crashes or wedges the COMM task
 - scheduled TX can be queued, observed in status, and canceled before handoff
-- RX and sense events stream in the documented format
+- RX, sense, and telemetry events stream in the documented format
 - `importcfg` accepts the same blob used by the menu importer
