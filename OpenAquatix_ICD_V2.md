@@ -144,6 +144,7 @@ require menu driving:
 - `:telemetry [all|temp|power|electrical|env]`
 - `:telemetrysub on|off [all|temp|power|electrical|env] [period_ms=<u32>]`
 - `:errorlog`
+- `:importcfg <START,...,END>`
 
 ` :txat ` required fields:
 - `route`
@@ -178,7 +179,29 @@ Examples:
 - `[STATUS] OK :telemetrysub on group=power period_ms=1000`
 - `[STATUS] OK :errorlog count=2 current_tick_ms=123456 current_reset_count=3`
 
-## 3.5 Host Event Streams
+## 3.5 Configuration Import/Export Signaling
+
+Configuration payload serialization remains backward-compatible:
+- export payload body is still emitted as `START_SOME,...,END_SOME` or
+  `START_ALL,...,END_ALL`
+- import parser still accepts the same serialized payload format
+
+The control/status surface for this flow is now tagged and machine-readable:
+- export begin line:
+  - `[STATUS] CFG_EXPORT_BEGIN start=<token> end=<token>`
+- export completion line:
+  - `[STATUS] CFG_EXPORT_DONE scope=<some|all> count=<u32>`
+- import prompt (menu path):
+  - `[PROMPT] Paste config blob from <start> to <end> > `
+- import success:
+  - `[STATUS] CFG_IMPORT_DONE imported=<u32>`
+- import parser failures:
+  - `[ERROR] CFG_IMPORT_<reason> ...`
+
+For `:importcfg`, firmware also emits the standard command completion record:
+- `[STATUS] OK :importcfg`
+
+## 3.6 Host Event Streams
 
 When `:rxsub on` is enabled, decoded receive events are emitted as one tagged
 line per packet:
@@ -222,4 +245,6 @@ When `:telemetrysub on` is enabled, periodic telemetry is emitted as:
 
 - v1 default behavior remains valid when tag mode and line mode are unused.
 - v2 features are strictly additive and opt-in.
+- configuration import/export payload encoding remains legacy for compatibility,
+  but signaling around it is now tagged.
 - Host implementations should probe support (`:tag on`, `:help`) and fall back to v1 heuristics if unsupported.

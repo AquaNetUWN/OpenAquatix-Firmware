@@ -107,7 +107,6 @@ session is otherwise operating in raw mode.
 Not every subsystem emits machine-native key/value responses.
 
 - menu rendering and many menu functions still generate human-readable text
-- `importcfg` reuses CFG import code that emits legacy plain text
 - when tagged mode is on, these paths are adapted by
   `COMM_TransmitTaggedText()` into tagged logical lines
 - when tagged mode is off, they remain plain text
@@ -175,18 +174,9 @@ In practice, `:tag on` mainly affects:
 
 ### Exceptions
 
-`importcfg` reuses the existing configuration import implementation in CFG.
-That import path emits its own legacy text via `COMM_TransmitData()`:
-
-- success text such as `Successfully imported <N> parameters`
-- parser errors such as `Error: start sequence not found`
-
-After a successful import, the command handler also emits:
-
-- `[STATUS] OK :importcfg`
-
-This means `importcfg` currently mixes the machine command surface with the
-older text output path.
+Configuration export/import still uses a legacy serialized payload body between
+`START_*` and `END_*` markers for copy/paste compatibility, but surrounding
+status and parser diagnostics are emitted as tagged HMI lines.
 
 ## Command Reference
 
@@ -833,33 +823,34 @@ Behavior:
 - accepts the same configuration blob used by menu path `1 > 1 > 15`
 - reuses the same CFG import parser as the menu importer
 - applies all imported parameters immediately
+- emits parser progress and parser failures as tagged lines
 - currently expects a single argument after tokenization, so quoting the full
   blob is recommended when sending it through shells or test harnesses that may
   otherwise split on spaces
 
-Success text:
+Success response examples:
 
-- legacy CFG text:
-  - `Successfully imported <N> parameters`
-- then command completion line:
-  - `[STATUS] OK :importcfg`
+- `[STATUS] CFG_IMPORT_DONE imported=<u32>`
+- `[STATUS] OK :importcfg`
 
-Failure text examples:
+Failure response examples:
 
-- `Error: start sequence not found`
-- `Error: end sequence not found`
-- `Invalid id received!`
-- `Invalid format!`
-- `Unknown ID: <id>`
-- `Unknown parameter type for ID <id>`
-- `Failed to set parameter with ID <id>`
+- `[ERROR] CFG_IMPORT_UNKNOWN_SEQUENCE`
+- `[ERROR] CFG_IMPORT_START_NOT_FOUND start=<token>`
+- `[ERROR] CFG_IMPORT_END_NOT_FOUND end=<token>`
+- `[ERROR] CFG_IMPORT_INVALID_ID id=<u32>`
+- `[ERROR] CFG_IMPORT_INVALID_FORMAT`
+- `[ERROR] CFG_IMPORT_UNKNOWN_ID id=<u32>`
+- `[ERROR] CFG_IMPORT_UNKNOWN_TYPE id=<u32>`
+- `[ERROR] CFG_IMPORT_SET_FAILED id=<u32>`
+- `[ERROR] CFG_IMPORT_COUNT_MISMATCH imported=<u32> expected=<u32>`
 
 Notes:
 
 - Import success currently requires the number of parsed parameters to match the
   import/export parameter list exactly.
-- This command emits legacy CFG text in addition to the final machine status
-  line, so consumers should handle mixed output.
+- To keep machine parseability deterministic, the command forces tagged output
+  during import execution even if the session was in `:tag off` mode.
 
 ### `:config`
 
@@ -974,6 +965,6 @@ Possible numeric fields:
 - `:txat` only accepts `janus_type=sms` in the current implementation.
 - `:cancel_tx` only cancels a request before the MAC host scheduler hands it to
   `MESS`.
-- `:importcfg` currently mixes legacy CFG text output with the machine command
-  response surface.
+- configuration payload bodies still use legacy `START...END` serialization;
+  only status/error signaling is fully tagged.
 - `:config` is advertised but not implemented.

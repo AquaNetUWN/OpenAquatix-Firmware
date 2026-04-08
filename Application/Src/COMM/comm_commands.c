@@ -1475,9 +1475,21 @@ static bool handleImportConfigCommand(CommandContext_t* context, char* args)
     return false;
   }
 
+  bool tag_mode_enabled = COMM_IsTagModeEnabled();
+  if (tag_mode_enabled == false) {
+    COMM_SetTagMode(true);
+  }
+
   if (ImportExport_ImportConfigurationText(argv[0], (uint16_t) strlen(argv[0]),
                                            output_buffer, context->interface) == false) {
+    if (tag_mode_enabled == false) {
+      COMM_SetTagMode(false);
+    }
     return true;
+  }
+
+  if (tag_mode_enabled == false) {
+    COMM_SetTagMode(false);
   }
 
   COMM_TransmitHmiMachineLinef(HMI_TAG_STATUS, context->interface,

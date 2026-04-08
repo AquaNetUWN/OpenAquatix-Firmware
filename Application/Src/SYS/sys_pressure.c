@@ -15,6 +15,7 @@
 #include "error_manager.h"
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 
 /* Private typedef -----------------------------------------------------------*/
 
@@ -49,6 +50,7 @@ void Pressure_Init(void)
   p_buf_head = 0;
   p_buf_tail = 0;
   pressure_ready = false;
+  memset(p_buf, 0, sizeof(p_buf));
   LPS_RegisterPressureBuf(p_buf, PRESSURE_BUFFER_SIZE, &p_buf_head);
 }
 
