@@ -21,6 +21,8 @@ extern "C" {
 #include "mac_channel_reports.h"
 #include "mess_main.h"
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 /* Private includes ----------------------------------------------------------*/
 
@@ -226,6 +228,17 @@ void COMM_TransmitHmiPrompt(const char* text, CommInterface_t interface);
  * @param format printf-style format string
  */
 void COMM_TransmitHmiPromptf(CommInterface_t interface, const char* format, ...);
+
+/**
+ * @brief Formats a uint64_t into a decimal ASCII string
+ *
+ * This avoids relying on `%llu` support in the embedded printf implementation.
+ *
+ * @param value Value to format
+ * @param buffer Output buffer
+ * @param buffer_size Size of output buffer in bytes
+ */
+void COMM_FormatUint64(uint64_t value, char* buffer, size_t buffer_size);
 
 /**
  * @brief Enables or disables machine-readable RX event streaming

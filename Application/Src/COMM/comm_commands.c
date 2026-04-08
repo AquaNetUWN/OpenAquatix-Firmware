@@ -993,15 +993,17 @@ static bool handleTimeCommand(CommandContext_t* context, char* args)
 {
   char* argv[1];
   int argc = 0;
+  char tick_ms[21];
 
   if (parseArguments(args, argv, 1, &argc) == false || argc != 0) {
     return false;
   }
 
+  COMM_FormatUint64(HAL_AbsoluteTimestamp(), tick_ms, sizeof(tick_ms));
   COMM_TransmitHmiMachineLinef(HMI_TAG_STATUS, context->interface,
-      "OK %ctime tick_ms=%llu cyccnt=%lu",
+      "OK %ctime tick_ms=%s cyccnt=%lu",
       COMM_COMMAND_DELIMITER,
-      (unsigned long long) HAL_AbsoluteTimestamp(),
+      tick_ms,
       (unsigned long) DWT->CYCCNT);
   return true;
 }
@@ -1410,6 +1412,7 @@ static bool handleErrorLogCommand(CommandContext_t* context, char* args)
   ErrorEntry_t entries[MAX_ENTRIES_IN_ERROR_LOG];
   uint32_t current_reset_count = 0;
   uint64_t current_timestamp = 0;
+  char current_tick_ms[21];
 
   if (parseArguments(args, argv, 1, &argc) == false || argc != 0) {
     return false;
@@ -1418,16 +1421,19 @@ static bool handleErrorLogCommand(CommandContext_t* context, char* args)
   uint16_t count = ErrorLog_CopySnapshot(entries, MAX_ENTRIES_IN_ERROR_LOG,
                                          &current_reset_count, &current_timestamp);
 
+  COMM_FormatUint64(current_timestamp, current_tick_ms, sizeof(current_tick_ms));
   COMM_TransmitHmiMachineLinef(HMI_TAG_STATUS, context->interface,
-      "OK %cerrorlog count=%u current_tick_ms=%llu current_reset_count=%lu",
-      COMM_COMMAND_DELIMITER, count, (unsigned long long) current_timestamp,
+      "OK %cerrorlog count=%u current_tick_ms=%s current_reset_count=%lu",
+      COMM_COMMAND_DELIMITER, count, current_tick_ms,
       (unsigned long) current_reset_count);
 
   for (uint16_t i = 0; i < count; i++) {
     const char* description = Error_GetDescription((OpenAquatixErrors_t) entries[i].error_code);
     const char* severity = Error_GetSeverity((OpenAquatixErrors_t) entries[i].error_code);
     char severity_token[32];
+    char timestamp_ms[21];
     sanitizeMachineToken(severity, severity_token, sizeof(severity_token));
+    COMM_FormatUint64(entries[i].timestamp, timestamp_ms, sizeof(timestamp_ms));
 
     size_t encoded_length = 0;
     const char* safe_description = (description != NULL) ? description : "";
@@ -1441,8 +1447,8 @@ static bool handleErrorLogCommand(CommandContext_t* context, char* args)
     }
 
     COMM_TransmitHmiMachineLinef(HMI_TAG_STATUS, context->interface,
-        "ENTRY %cerrorlog index=%u timestamp_ms=%llu reset_count=%lu error_code=%lu severity=%s file=%s task=%s line=%lu occurrences=%lu description_b64=%s",
-        COMM_COMMAND_DELIMITER, i, (unsigned long long) entries[i].timestamp,
+        "ENTRY %cerrorlog index=%u timestamp_ms=%s reset_count=%lu error_code=%lu severity=%s file=%s task=%s line=%lu occurrences=%lu description_b64=%s",
+        COMM_COMMAND_DELIMITER, i, timestamp_ms,
         (unsigned long) entries[i].reset_count, (unsigned long) entries[i].error_code,
         severity_token[0] != '\0' ? severity_token : "unknown",
         entries[i].file_name != NULL ? entries[i].file_name : "unknown",

@@ -568,17 +568,39 @@ void COMM_ReportHostRxEvent(const Message_t* msg)
 
 void COMM_ReportHostSenseEvent(const ChannelReport_t* report)
 {
+  char timestamp_ms[21];
+
   if (report == NULL || host_sense_subscription.enabled == false) {
     return;
   }
 
+  COMM_FormatUint64(report->timestamp_ms, timestamp_ms, sizeof(timestamp_ms));
   COMM_TransmitHmiMachineLinef(HMI_TAG_NOTIFY, host_sense_subscription.interface,
-      "EVENT sense timestamp_ms=%llu cyccnt=%lu psd=%.6f",
-      (unsigned long long) report->timestamp_ms, (unsigned long) report->cyccnt,
+      "EVENT sense timestamp_ms=%s cyccnt=%lu psd=%.6f",
+      timestamp_ms, (unsigned long) report->cyccnt,
       (double) report->psd);
 }
 
 /* Private function definitions ----------------------------------------------*/
+
+void COMM_FormatUint64(uint64_t value, char* buffer, size_t buffer_size)
+{
+  char scratch[21];
+  size_t index = sizeof(scratch) - 1;
+
+  if (buffer == NULL || buffer_size == 0) {
+    return;
+  }
+
+  scratch[index] = '\0';
+
+  do {
+    scratch[--index] = (char) ('0' + (value % 10ULL));
+    value /= 10ULL;
+  } while (value != 0ULL && index > 0);
+
+  snprintf(buffer, buffer_size, "%s", &scratch[index]);
+}
 
 void initializeTelemetryResources(void)
 {
@@ -721,15 +743,17 @@ bool buildTelemetryLine(char* buffer, size_t buffer_size, const char* prefix,
                         TelemetryGroup_t group, const TelemetrySnapshot_t* snapshot)
 {
   size_t offset = 0;
+  char tick_ms[21];
 
   if (buffer == NULL || buffer_size == 0 || prefix == NULL || snapshot == NULL ||
       group == TELEMETRY_GROUP_NONE) {
     return false;
   }
 
+  COMM_FormatUint64(snapshot->tick_ms, tick_ms, sizeof(tick_ms));
   offset = appendMachineToken(buffer, buffer_size, offset,
-      "%s group=%s tick_ms=%llu cyccnt=%lu temp_ready=%s power_ready=%s electrical_ready=%s env_ready=%s",
-      prefix, telemetryGroupString(group), (unsigned long long) snapshot->tick_ms,
+      "%s group=%s tick_ms=%s cyccnt=%lu temp_ready=%s power_ready=%s electrical_ready=%s env_ready=%s",
+      prefix, telemetryGroupString(group), tick_ms,
       (unsigned long) snapshot->cyccnt, snapshot->temp_ready ? "yes" : "no",
       snapshot->power_ready ? "yes" : "no",
       snapshot->electrical_ready ? "yes" : "no",
