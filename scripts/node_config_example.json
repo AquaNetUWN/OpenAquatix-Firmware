@@ -1,0 +1,26 @@
+[
+  {
+    "name": "node-1",
+    "host": "node-1.local",
+    "device": "/dev/ttyACM0",
+    "baud": 115200
+  },
+  {
+    "name": "node-2",
+    "host": "node-2.local",
+    "device": "/dev/ttyACM0",
+    "baud": 115200
+  },
+  {
+    "name": "node-3",
+    "host": "node-3.local",
+    "device": "/dev/ttyACM0",
+    "baud": 115200
+  },
+  {
+    "name": "node-4",
+    "host": "node-4.local",
+    "device": "/dev/ttyACM0",
+    "baud": 115200
+  }
+]
