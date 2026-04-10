@@ -374,7 +374,7 @@ def run_suite(runner: SuiteRunner, args: argparse.Namespace) -> None:
         [r"\btelemetrysub=off\b", r"\btelemetry_group=none\b", r"\btelemetry_period_ms=0\b"],
     )
 
-    # Error log + stub command.
+    # Error log + config command.
     runner.run_command_test(
         "Read error log summary",
         ":errorlog",
@@ -382,9 +382,9 @@ def run_suite(runner: SuiteRunner, args: argparse.Namespace) -> None:
         timeout_s=max(args.command_timeout_s, 2.0),
     )
     runner.run_command_test(
-        "Config command is stubbed",
-        ":config",
-        [r"\[ERROR\]\s+Config command not implemented yet"],
+        "Read baud config parameter",
+        ":config get baud",
+        [r"\[STATUS\]\s+OK :config get baud value=\d+(?:\.\d+)? units=bps"],
     )
 
     # Cancel tests do not require transducer traffic.

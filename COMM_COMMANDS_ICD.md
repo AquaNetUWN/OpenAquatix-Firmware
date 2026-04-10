@@ -857,18 +857,32 @@ Notes:
 Usage:
 
 ```text
-:config [get|set <parameter_name> [value]]
+:config get baud
 ```
 
-Current state:
+Currently supported:
 
-- Placeholder for future machine access to individual configuration parameters.
-- The command name, description, and usage text exist, but no get/set behavior
-  is implemented yet.
-- always returns:
+- `get baud` returns the current custom PHY baud rate in bits per second.
+- parameter names are currently limited to `baud`.
+- `set` behavior is not implemented yet.
+
+Behavior:
+
+- `get baud` reads `PARAM_BAUD`
+- emits one machine-readable status line on success
+
+Success response:
 
 ```text
-[ERROR] Config command not implemented yet
+[STATUS] OK :config get baud value=<float> units=bps
+```
+
+Failure response examples:
+
+```text
+[ERROR] Unsupported config parameter: <parameter_name>
+[ERROR] Failed to retrieve config parameter: baud
+[ERROR] Config set is not implemented yet
 ```
 
 ## Host Event Streams
@@ -967,4 +981,5 @@ Possible numeric fields:
   `MESS`.
 - configuration payload bodies still use legacy `START...END` serialization;
   only status/error signaling is fully tagged.
-- `:config` is advertised but not implemented.
+- `:config` currently supports only `get baud`; other parameters and `set`
+  behavior remain unimplemented.

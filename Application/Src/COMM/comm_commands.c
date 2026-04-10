@@ -1499,8 +1499,47 @@ static bool handleImportConfigCommand(CommandContext_t* context, char* args)
 
 static bool handleConfigCommand(CommandContext_t* context, char* args)
 {
-  (void) args;
-  COMM_TransmitHmiMachineLine(HMI_TAG_ERROR,
-      "Config command not implemented yet", context->interface);
-  return true;
+  char* argv[3];
+  int argc = 0;
+
+  if (context == NULL) {
+    return false;
+  }
+
+  if (parseArguments(args, argv, 3, &argc) == false || argc == 0) {
+    return false;
+  }
+
+  if (stringsEqualIgnoreCase(argv[0], "get") == true) {
+    float baud = 0.0f;
+
+    if (argc != 2) {
+      return false;
+    }
+
+    if (stringsEqualIgnoreCase(argv[1], "baud") != true) {
+      COMM_TransmitHmiMachineLinef(HMI_TAG_ERROR, context->interface,
+          "Unsupported config parameter: %s", argv[1]);
+      return true;
+    }
+
+    if (Param_GetFloat(PARAM_BAUD, &baud) == false) {
+      COMM_TransmitHmiMachineLinef(HMI_TAG_ERROR, context->interface,
+          "Failed to retrieve config parameter: %s", argv[1]);
+      return true;
+    }
+
+    COMM_TransmitHmiMachineLinef(HMI_TAG_STATUS, context->interface,
+        "OK %cconfig get baud value=%.3f units=bps",
+        COMM_COMMAND_DELIMITER, (double) baud);
+    return true;
+  }
+
+  if (stringsEqualIgnoreCase(argv[0], "set") == true) {
+    COMM_TransmitHmiMachineLine(HMI_TAG_ERROR,
+        "Config set is not implemented yet", context->interface);
+    return true;
+  }
+
+  return false;
 }
